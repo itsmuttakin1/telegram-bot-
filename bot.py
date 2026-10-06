@@ -67,7 +67,21 @@ def get_target_chat_id(raw_id: str):
         return int(raw)
     return raw
 
-# ---------- Welcome / Goodbye ----------
+async def can_user_post(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Main admin othoba target channel-er admin hole post korte parbe"""
+    if is_admin(user_id):
+        return True
+    channel = data.get("channel_id", "").strip()
+    if not channel:
+        return False
+    try:
+        target_chat = get_target_chat_id(channel)
+        member = await context.bot.get_chat_member(target_chat, user_id)
+        return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
+    except Exception:
+        return False
+
+# ---------- Welcome / Goodbye (Sudhu Group-e, Channel-e na) ----------
 def extra_button_markup():
     url = data.get("button_url", "").strip()
     if not url:
@@ -75,13 +89,16 @@ def extra_button_markup():
     text = data.get("button_text", "Video Channel").strip() or "Video Channel"
     return InlineKeyboardMarkup([[InlineKeyboardButton(text, url=url)]])
 
-# ChatMemberHandler diye join/leave dhora (Supergroup ar Regular group sob jaygay kaj korbe)
 async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    # Channel-e welcome ba goodbye jeno na jay
+    if not chat or chat.type not in ("group", "supergroup"):
+        return
+
     result = update.chat_member
     if not result:
         return
 
-    chat = update.effective_chat
     user = result.new_chat_member.user
     if user.is_bot:
         return
@@ -127,8 +144,10 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
         except Exception as e:
             logger.error(f"Goodbye message error: {e}")
 
-# Fallback service message handler
 async def greet_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if not chat or chat.type not in ("group", "supergroup"):
+        return
     if not update.message or not update.message.new_chat_members:
         return
     for member in update.message.new_chat_members:
@@ -147,6 +166,9 @@ async def greet_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_html(text, reply_markup=extra_button_markup())
 
 async def farewell_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if not chat or chat.type not in ("group", "supergroup"):
+        return
     if not update.message or not update.message.left_chat_member:
         return
     member = update.message.left_chat_member
@@ -297,10 +319,10 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await issue_warning(update, context, user, reason)
     raise ApplicationHandlerStop
 
-# ---------- Channel Post System ----------
-def _post_draft(context: ContextTypes.DEFAULT_TYPE):
+# ---------- Channel Post System (Admin-der jonno open) ----------
+def _post_draft(context: ContextTypes.DEFAULT_TYPE, user_id: int):
     drafts = context.bot_data.setdefault("post_draft", {})
-    return drafts.get(ADMIN_ID)
+    return drafts.get(user_id)
 
 def post_editor_markup(draft):
     rows = []
@@ -323,26 +345,33 @@ def post_preview_text(draft):
     return "\n".join(lines)
 
 async def post_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    user_id = update.effective_user.id
+    if not await can_user_post(user_id, context):
+        await update.message.reply_text("শুধু চ্যানেলের এডমিনরা পোস্ট তৈরি করতে পারবে।")
         return
     await start_post_flow(update, context)
 
 async def start_post_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     if not data.get("channel_id", "").strip():
-        context.user_data["awaiting"] = "channel_id"
-        await update.effective_message.reply_text(
-            "প্রথমে পোস্ট চ্যানেল সেট করতে হবে।\nপ্রাইভেট চ্যানেলের আইডি পাঠান (যেমন: -100xxxxxxxxxx)।\n"
-            "⚠️ বট কে অবশ্যই চ্যানেলে Administrator (Post messages পারমিশন সহ) বানাতে হবে।"
-        )
+        if is_admin(user_id):
+            context.user_data["awaiting"] = "channel_id"
+            await update.effective_message.reply_text(
+                "প্রথমে পোস্ট চ্যানেল সেট করতে হবে।\nপ্রাইভেট চ্যানেলের আইডি পাঠান (যেমন: -100xxxxxxxxxx)।\n"
+                "⚠️ বট কে অবশ্যই চ্যানেলে Administrator (Post messages পারমিশন সহ) বানাতে হবে।"
+            )
+        else:
+            await update.effective_message.reply_text("মেইন এডমিন এখনো কোনো পোস্ট চ্যানেল সেট করেনি।")
         return
-    context.bot_data.setdefault("post_draft", {})[ADMIN_ID] = None
+    context.bot_data.setdefault("post_draft", {})[user_id] = None
     context.user_data["awaiting"] = "post_video"
     await update.effective_message.reply_text(
         "ভিডিও অথবা ছবি পাঠান যেটা চ্যানেলে পোস্ট করতে চান (ক্যাপশনসহ পাঠাতে পারেন)।\nবাতিল করতে /cancel লিখুন।"
     )
 
 async def post_video_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    user_id = update.effective_user.id
+    if not await can_user_post(user_id, context):
         return
     if context.user_data.get("awaiting") != "post_video":
         return
@@ -354,19 +383,20 @@ async def post_video_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         return
     draft = {"kind": kind, "file_id": file_id, "caption": msg.caption or "", "buttons": []}
-    context.bot_data.setdefault("post_draft", {})[ADMIN_ID] = draft
+    context.bot_data.setdefault("post_draft", {})[user_id] = draft
     context.user_data["awaiting"] = None
     await update.message.reply_text(post_preview_text(draft), reply_markup=post_editor_markup(draft))
     raise ApplicationHandlerStop
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    user_id = update.effective_user.id
+    if not await can_user_post(user_id, context):
         return
     context.user_data["awaiting"] = None
-    context.bot_data.setdefault("post_draft", {})[ADMIN_ID] = None
+    context.bot_data.setdefault("post_draft", {})[user_id] = None
     await update.message.reply_text("❌ বাতিল করা হয়েছে।")
 
-# ---------- Admin Panel ----------
+# ---------- Admin Panel & Post Editor Callbacks ----------
 def admin_panel_markup():
     kb = [
         [InlineKeyboardButton("✏️ Welcome মেসেজ সেট", callback_data="set_welcome")],
@@ -393,11 +423,79 @@ async def ad_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if not is_admin(query.from_user.id):
+    user_id = query.from_user.id
+    action = query.data
+
+    # Post flow actions (Channel Admin-ra use korte parbe)
+    if action in ("new_post", "post_add_btn", "post_cancel", "post_publish") or action.startswith("post_rm_"):
+        if not await can_user_post(user_id, context):
+            await query.edit_message_text("অনুমতি নেই। শুধু চ্যানেল এডমিনরা পোস্ট করতে পারবে।")
+            return
+
+        if action == "new_post":
+            await start_post_flow(update, context)
+            return
+
+        draft = _post_draft(context, user_id)
+        if not draft and action != "post_cancel":
+            await query.edit_message_text("পোস্ট খুঁজে পাওয়া যায়নি, আবার /post দিয়ে শুরু করুন।")
+            return
+
+        if action == "post_add_btn":
+            if len(draft["buttons"]) >= 4:
+                await query.answer("সর্বোচ্চ ৪টা বাটন যোগ করা যাবে।", show_alert=True)
+                return
+            context.user_data["awaiting"] = "post_button"
+            await query.edit_message_text(
+                post_preview_text(draft) + "\n\nনতুন বাটন এই ফরম্যাটে পাঠান:\nবাটন নাম | লিংক\n\nউদাহরণ:\nWatch Now | https://t.me/yourchannel"
+            )
+        elif action.startswith("post_rm_"):
+            idx = int(action.replace("post_rm_", ""))
+            if 0 <= idx < len(draft["buttons"]):
+                draft["buttons"].pop(idx)
+            await query.edit_message_text(post_preview_text(draft), reply_markup=post_editor_markup(draft))
+        elif action == "post_cancel":
+            context.bot_data.setdefault("post_draft", {})[user_id] = None
+            context.user_data["awaiting"] = None
+            await query.edit_message_text("❌ পোস্ট বাতিল করা হয়েছে।")
+        elif action == "post_publish":
+            channel = data.get("channel_id", "").strip()
+            if not channel:
+                await query.edit_message_text("চ্যানেল সেট করা নেই।")
+                return
+
+            chat_target = get_target_chat_id(channel)
+            markup = None
+            if draft["buttons"]:
+                rows = [[InlineKeyboardButton(b["text"], url=b["url"])] for b in draft["buttons"]]
+                markup = InlineKeyboardMarkup(rows)
+            try:
+                if draft["kind"] == "video":
+                    await context.bot.send_video(
+                        chat_id=chat_target, video=draft["file_id"],
+                        caption=draft["caption"] or None, reply_markup=markup
+                    )
+                else:
+                    await context.bot.send_photo(
+                        chat_id=chat_target, photo=draft["file_id"],
+                        caption=draft["caption"] or None, reply_markup=markup
+                    )
+                context.bot_data.setdefault("post_draft", {})[user_id] = None
+                await query.edit_message_text(f"✅ চ্যানেলে ({channel}) পোস্ট সফলভাবে হয়ে গেছে।")
+            except Exception as e:
+                await query.edit_message_text(
+                    f"❌ পোস্ট করতে সমস্যা হয়েছে: {e}\n\n"
+                    f"লক্ষ্য করুন:\n"
+                    f"১. চ্যানেলের আইডি ঠিক আছে কিনা (প্রাইভেট চ্যানেলে অবশ্যই -100 দিয়ে শুরু হয়)।\n"
+                    f"২. বট ওই প্রাইভেট চ্যানেলে Admin এবং 'Post Messages' পারমিশন অন আছে কিনা।"
+                )
+        return
+
+    # Baaki Admin panel actions (Sudhu Main Admin-er jonno)
+    if not is_admin(user_id):
         await query.edit_message_text("অনুমতি নেই।")
         return
 
-    action = query.data
     if action == "set_welcome":
         context.user_data["awaiting"] = "welcome"
         await query.edit_message_text(
@@ -448,87 +546,50 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur = data.get("channel_id", "") or "(সেট করা নেই)"
         await query.edit_message_text(
             "প্রাইভেট চ্যানেলের আইডি পাঠান (যেমন: -100xxxxxxxxxx)।\n"
-            "⚠️️ বট কে অবশ্যই চ্যানেলে Post Messages পারমিশন সহ Admin বানাতে হবে।\n\n"
+            "⚠️ বট কে অবশ্যই চ্যানেলে Post Messages পারমিশন সহ Admin বানাতে হবে।\n\n"
             f"বর্তমান চ্যানেল: {cur}"
         )
-    elif action == "new_post":
-        if not data.get("channel_id", "").strip():
-            context.user_data["awaiting"] = "channel_id"
-            await query.edit_message_text(
-                "প্রথমে পোস্ট চ্যানেল সেট করতে হবে।\nপ্রাইভেট চ্যানেলের আইডি পাঠান (যেমন: -100xxxxxxxxxx)।\n"
-                "⚠️ বট কে অবশ্যই চ্যানেলে Admin বানাতে হবে।"
-            )
-            return
-        context.bot_data.setdefault("post_draft", {})[ADMIN_ID] = None
-        context.user_data["awaiting"] = "post_video"
-        await query.edit_message_text(
-            "ভিডিও অথবা ছবি পাঠান যেটা চ্যানেলে পোস্ট করতে চান (ক্যাপশনসহ পাঠাতে পারেন)।\nবাতিল করতে /cancel লিখুন।"
-        )
-    elif action == "post_add_btn":
-        draft = _post_draft(context)
-        if not draft:
-            await query.edit_message_text("পোস্ট খুঁজে পাওয়া যায়নি, আবার /post দিয়ে শুরু করুন।")
-            return
-        if len(draft["buttons"]) >= 4:
-            await query.answer("সর্বোচ্চ ৪টা বাটন যোগ করা যাবে।", show_alert=True)
-            return
-        context.user_data["awaiting"] = "post_button"
-        await query.edit_message_text(
-            post_preview_text(draft) + "\n\nনতুন বাটন এই ফরম্যাটে পাঠান:\nবাটন নাম | লিংক\n\nউদাহরণ:\nWatch Now | https://t.me/yourchannel"
-        )
-    elif action.startswith("post_rm_"):
-        draft = _post_draft(context)
-        if not draft:
-            await query.edit_message_text("পোস্ট খুঁজে পাওয়া যায়নি, আবার /post দিয়ে শুরু করুন।")
-            return
-        idx = int(action.replace("post_rm_", ""))
-        if 0 <= idx < len(draft["buttons"]):
-            draft["buttons"].pop(idx)
-        await query.edit_message_text(post_preview_text(draft), reply_markup=post_editor_markup(draft))
-    elif action == "post_cancel":
-        context.bot_data.setdefault("post_draft", {})[ADMIN_ID] = None
-        context.user_data["awaiting"] = None
-        await query.edit_message_text("❌ পোস্ট বাতিল করা হয়েছে।")
-    elif action == "post_publish":
-        draft = _post_draft(context)
-        if not draft:
-            await query.edit_message_text("পোস্ট খুঁজে পাওয়া যায়নি, আবার /post দিয়ে শুরু করুন।")
-            return
-        channel = data.get("channel_id", "").strip()
-        if not channel:
-            await query.edit_message_text("চ্যানেল সেট করা নেই।")
-            return
-
-        chat_target = get_target_chat_id(channel)
-        markup = None
-        if draft["buttons"]:
-            rows = [[InlineKeyboardButton(b["text"], url=b["url"])] for b in draft["buttons"]]
-            markup = InlineKeyboardMarkup(rows)
-        try:
-            if draft["kind"] == "video":
-                await context.bot.send_video(
-                    chat_id=chat_target, video=draft["file_id"],
-                    caption=draft["caption"] or None, reply_markup=markup
-                )
-            else:
-                await context.bot.send_photo(
-                    chat_id=chat_target, photo=draft["file_id"],
-                    caption=draft["caption"] or None, reply_markup=markup
-                )
-            context.bot_data.setdefault("post_draft", {})[ADMIN_ID] = None
-            await query.edit_message_text(f"✅ চ্যানেলে ({channel}) পোস্ট সফলভাবে হয়ে গেছে।")
-        except Exception as e:
-            await query.edit_message_text(
-                f"❌ পোস্ট করতে সমস্যা হয়েছে: {e}\n\n"
-                f"লক্ষ্য করুন:\n"
-                f"১. চ্যানেলের আইডি ঠিক আছে কিনা (প্রাইভেট চ্যানেলে অবশ্যই -100 দিয়ে শুরু হয়)।\n"
-                f"২. বট ওই প্রাইভেট চ্যানেলে Admin এবং 'Post Messages' পারমিশন অন আছে কিনা।"
-            )
 
 async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
     awaiting = context.user_data.get("awaiting")
-    if not awaiting or not is_admin(update.effective_user.id):
+    user_id = update.effective_user.id
+    if not awaiting:
         return
+
+    # Post Button adding (Channel Admin o korte parbe)
+    if awaiting == "post_button":
+        if not await can_user_post(user_id, context):
+            return
+        draft = _post_draft(context, user_id)
+        if not draft:
+            await update.message.reply_text("পোস্ট খুঁজে পাওয়া যায়নি, আবার /post দিয়ে শুরু করুন।")
+            context.user_data["awaiting"] = None
+            raise ApplicationHandlerStop
+        raw = update.message.text.strip()
+        if "|" not in raw:
+            await update.message.reply_text("❌ ফরম্যাট ভুল। এভাবে পাঠান: বাটন নাম | লিংক")
+            context.user_data["awaiting"] = "post_button"
+            return
+        btn_text, btn_url = raw.split("|", 1)
+        btn_text, btn_url = btn_text.strip(), btn_url.strip()
+        if not (btn_url.startswith("http://") or btn_url.startswith("https://") or btn_url.startswith("t.me/") or btn_url.startswith("tg://")):
+            await update.message.reply_text("❌ লিংক সঠিক ফরম্যাটে দিন (http:// বা https:// দিয়ে শুরু)। আবার চেষ্টা করুন।")
+            context.user_data["awaiting"] = "post_button"
+            return
+        if btn_url.startswith("t.me/"):
+            btn_url = "https://" + btn_url
+        if len(draft["buttons"]) >= 4:
+            await update.message.reply_text("সর্বোচ্চ ৪টা বাটন যোগ করা যাবে।")
+        else:
+            draft["buttons"].append({"text": btn_text or "Button", "url": btn_url})
+        await update.message.reply_text(post_preview_text(draft), reply_markup=post_editor_markup(draft))
+        context.user_data["awaiting"] = None
+        raise ApplicationHandlerStop
+
+    # Baki settings sudhu main admin-er jonno
+    if not is_admin(user_id):
+        return
+
     if awaiting == "welcome":
         data["welcome"] = update.message.text
         save_data(data)
@@ -572,7 +633,6 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("✅ গ্রুপ রুলস সেট হয়েছে। এখন থেকে ওয়ার্নিং এর নিচে এটা দেখাবে।")
     elif awaiting == "channel_id":
         raw = update.message.text.strip()
-        # Auto-format for negative id if user forgets -100
         if raw.isdigit():
             raw = f"-100{raw}"
         data["channel_id"] = raw
@@ -580,30 +640,6 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(
             f"✅ পোস্ট চ্যানেল আইডি সেট হয়েছে: {raw}\n\nএখন /post কমান্ড দিয়ে পোস্ট করা শুরু করতে পারেন।"
         )
-    elif awaiting == "post_button":
-        draft = _post_draft(context)
-        if not draft:
-            await update.message.reply_text("পোস্ট খুঁজে পাওয়া যায়নি, আবার /post দিয়ে শুরু করুন।")
-            context.user_data["awaiting"] = None
-            raise ApplicationHandlerStop
-        raw = update.message.text.strip()
-        if "|" not in raw:
-            await update.message.reply_text("❌ ফরম্যাট ভুল। এভাবে পাঠান: বাটন নাম | লিংক")
-            context.user_data["awaiting"] = "post_button"
-            return
-        btn_text, btn_url = raw.split("|", 1)
-        btn_text, btn_url = btn_text.strip(), btn_url.strip()
-        if not (btn_url.startswith("http://") or btn_url.startswith("https://") or btn_url.startswith("t.me/") or btn_url.startswith("tg://")):
-            await update.message.reply_text("❌ লিংক সঠিক ফরম্যাটে দিন (http:// বা https:// দিয়ে শুরু)। আবার চেষ্টা করুন।")
-            context.user_data["awaiting"] = "post_button"
-            return
-        if btn_url.startswith("t.me/"):
-            btn_url = "https://" + btn_url
-        if len(draft["buttons"]) >= 4:
-            await update.message.reply_text("সর্বোচ্চ ৪টা বাটন যোগ করা যাবে।")
-        else:
-            draft["buttons"].append({"text": btn_text or "Button", "url": btn_url})
-        await update.message.reply_text(post_preview_text(draft), reply_markup=post_editor_markup(draft))
     context.user_data["awaiting"] = None
     raise ApplicationHandlerStop
 
@@ -664,14 +700,14 @@ def main():
     app.add_handler(CommandHandler("post", post_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
 
-    # Real-time Chat Member Status Updates (Welcome & Goodbye for Supergroups/Groups)
+    # Real-time Chat Member Status Updates (Sudhu group-er jonno, channel ignore korbe)
     app.add_handler(ChatMemberHandler(chat_member_update, ChatMemberHandler.CHAT_MEMBER))
 
     # Fallback status updates
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, greet_new_member))
     app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, farewell_member))
 
-    # Admin Callback Queries
+    # Admin Callback Queries (Post editor button + Admin settings)
     app.add_handler(CallbackQueryHandler(admin_callback))
 
     # Admin private video/photo capture
@@ -679,7 +715,7 @@ def main():
         (filters.VIDEO | filters.PHOTO) & filters.ChatType.PRIVATE, post_video_capture
     ))
 
-    # Admin private text inputs
+    # Private text inputs
     app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, admin_text_capture))
 
     # Anti-link/promo automod in groups
@@ -689,7 +725,6 @@ def main():
     ))
 
     logger.info("Bot starting...")
-    # Chat member updates receive korte Update.ALL_TYPES obosshoi thakte hobe
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
