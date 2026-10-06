@@ -25,19 +25,26 @@ model = genai.GenerativeModel("gemini-1.5-flash")
 
 DATA_FILE = "data.json"
 
+DEFAULT_DATA = {
+    "welcome": "ওয়েলকাম {name}! গ্রুপে স্বাগতম 🎉",
+    "goodbye": "{name} গ্রুপ থেকে চলে গেলেন। বিদায় 👋",
+    "warnings": {},   # user_id(str) -> count
+    "banned": {},      # user_id(str) -> reason
+    "ai_enabled": True,
+    "antilink_enabled": True,
+    "whitelist_links": [],   # domains allowed, e.g. "t.me/yourchannel"
+    "button_text": "Video Channel",
+    "button_url": "",        # empty = button hidden until admin sets a URL
+    "rules": "",              # empty = no rules shown under warnings
+}
+
 def load_data():
+    merged = dict(DEFAULT_DATA)
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {
-        "welcome": "ওয়েলকাম {name}! গ্রুপে স্বাগতম 🎉",
-        "goodbye": "{name} গ্রুপ থেকে চলে গেলেন। বিদায় 👋",
-        "warnings": {},   # user_id(str) -> count
-        "banned": {},      # user_id(str) -> reason
-        "ai_enabled": True,
-        "antilink_enabled": True,
-        "whitelist_links": []   # domains allowed, e.g. "t.me/yourchannel"
-    }
+            saved = json.load(f)
+        merged.update(saved)
+    return merged
 
 def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
@@ -57,6 +64,13 @@ async def is_group_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, use
         return False
 
 # ---------- Welcome / Goodbye ----------
+def extra_button_markup():
+    url = data.get("button_url", "").strip()
+    if not url:
+        return None
+    text = data.get("button_text", "Video Channel").strip() or "Video Channel"
+    return InlineKeyboardMarkup([[InlineKeyboardButton(text, url=url)]])
+
 async def greet_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for member in update.message.new_chat_members:
         if str(member.id) in data["banned"]:
@@ -66,13 +80,13 @@ async def greet_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             continue
         text = data["welcome"].format(name=member.mention_html(), group=update.effective_chat.title)
-        await update.message.reply_html(text)
+        await update.message.reply_html(text, reply_markup=extra_button_markup())
 
 async def farewell_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     member = update.message.left_chat_member
     if member:
         text = data["goodbye"].format(name=member.full_name, group=update.effective_chat.title)
-        await update.message.reply_text(text)
+        await update.message.reply_text(text, reply_markup=extra_button_markup())
 
 # ---------- Warning / Ban ----------
 async def issue_warning(update: Update, context: ContextTypes.DEFAULT_TYPE, target, reason: str):
@@ -96,10 +110,11 @@ async def issue_warning(update: Update, context: ContextTypes.DEFAULT_TYPE, targ
         except Exception as e:
             await update.effective_chat.send_message(f"ব্যান করতে সমস্যা হয়েছে: {e}")
     else:
-        await update.effective_chat.send_message(
-            f"⚠️ {target.mention_html()} কে ওয়ার্নিং দেওয়া হলো। ({count}/3)\nকারণ: {reason}",
-            parse_mode="HTML"
-        )
+        warn_text = f"⚠️ {target.mention_html()} কে ওয়ার্নিং দেওয়া হলো। ({count}/3)\nকারণ: {reason}"
+        rules = data.get("rules", "").strip()
+        if rules:
+            warn_text += f"\n\n📜 গ্রুপ রুলস:\n{rules}"
+        await update.effective_chat.send_message(warn_text, parse_mode="HTML")
 
 async def warn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, context, update.effective_user.id):
@@ -220,19 +235,16 @@ async def ai_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg or not msg.text:
         return
-    bot_username = context.bot.username
-    is_reply_to_bot = (
-        msg.reply_to_message
-        and msg.reply_to_message.from_user
-        and msg.reply_to_message.from_user.id == context.bot.id
-    )
-    mentioned = f"@{bot_username}" in msg.text if bot_username else False
-    if not (is_reply_to_bot or mentioned):
+    if msg.from_user and msg.from_user.is_bot:
         return
 
-    prompt = msg.text.replace(f"@{bot_username}", "").strip() if bot_username else msg.text
+    bot_username = context.bot.username
+    prompt = msg.text.replace(f"@{bot_username}", "").strip() if bot_username else msg.text.strip()
     if not prompt:
         return
+
+    # Groups: bot now auto-replies to every normal text message (when AI is ON
+    # from the admin panel). Admin can turn this off anytime if it gets noisy.
     await context.bot.send_chat_action(update.effective_chat.id, "typing")
     try:
         resp = model.generate_content(
@@ -259,6 +271,8 @@ def admin_panel_markup():
             "🔗 লিংক/প্রোমো অটো-ওয়ার্ন: " + ("ON ✅" if data.get("antilink_enabled", True) else "OFF ❌"),
             callback_data="toggle_antilink"
         )],
+        [InlineKeyboardButton("🔘 Welcome/Goodbye বাটন সেট", callback_data="set_button")],
+        [InlineKeyboardButton("📜 গ্রুপ রুলস সেট", callback_data="set_rules")],
     ]
     return InlineKeyboardMarkup(kb)
 
@@ -306,6 +320,25 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["antilink_enabled"] = not data.get("antilink_enabled", True)
         save_data(data)
         await query.edit_message_text("🛠 অ্যাডমিন প্যানেল", reply_markup=admin_panel_markup())
+    elif action == "set_button":
+        context.user_data["awaiting"] = "button"
+        cur_text = data.get("button_text", "Video Channel")
+        cur_url = data.get("button_url", "") or "(সেট করা নেই — বাটন হাইড থাকবে)"
+        await query.edit_message_text(
+            "নতুন বাটন সেট করতে এই ফরম্যাটে পাঠান:\n\n"
+            "বাটন নাম | লিংক\n\n"
+            "উদাহরণ:\nVideo Channel | https://t.me/yourchannel\n\n"
+            f"বর্তমান বাটন নাম: {cur_text}\nবর্তমান লিংক: {cur_url}\n\n"
+            "বাটন বন্ধ করতে শুধু লিখুন: off"
+        )
+    elif action == "set_rules":
+        context.user_data["awaiting"] = "rules"
+        cur_rules = data.get("rules", "") or "(সেট করা নেই)"
+        await query.edit_message_text(
+            "নতুন গ্রুপ রুলস পাঠান — কেউ ওয়ার্নিং খেলে এই টেক্সট মেসেজের নিচে দেখানো হবে।\n\n"
+            f"বর্তমান রুলস:\n{cur_rules}\n\n"
+            "রুলস বন্ধ করতে শুধু লিখুন: off"
+        )
 
 async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
     awaiting = context.user_data.get("awaiting")
@@ -319,7 +352,41 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
         data["goodbye"] = update.message.text
         save_data(data)
         await update.message.reply_text("✅ Goodbye মেসেজ সেট হয়েছে।")
+    elif awaiting == "button":
+        raw = update.message.text.strip()
+        if raw.lower() == "off":
+            data["button_url"] = ""
+            save_data(data)
+            await update.message.reply_text("✅ বাটন বন্ধ করা হয়েছে।")
+        elif "|" in raw:
+            btn_text, btn_url = raw.split("|", 1)
+            btn_text, btn_url = btn_text.strip(), btn_url.strip()
+            if not (btn_url.startswith("http://") or btn_url.startswith("https://") or btn_url.startswith("t.me/") or btn_url.startswith("tg://")):
+                await update.message.reply_text("❌ লিংক সঠিক ফরম্যাটে দিন (http:// বা https:// দিয়ে শুরু)। আবার চেষ্টা করুন।")
+                context.user_data["awaiting"] = "button"
+                return
+            if btn_url.startswith("t.me/"):
+                btn_url = "https://" + btn_url
+            data["button_text"] = btn_text or "Video Channel"
+            data["button_url"] = btn_url
+            save_data(data)
+            await update.message.reply_text(f"✅ বাটন সেট হয়েছে: {data['button_text']} → {data['button_url']}")
+        else:
+            await update.message.reply_text("❌ ফরম্যাট ভুল। এভাবে পাঠান: বাটন নাম | লিংক")
+            context.user_data["awaiting"] = "button"
+            return
+    elif awaiting == "rules":
+        raw = update.message.text.strip()
+        if raw.lower() == "off":
+            data["rules"] = ""
+            save_data(data)
+            await update.message.reply_text("✅ গ্রুপ রুলস বন্ধ করা হয়েছে।")
+        else:
+            data["rules"] = update.message.text
+            save_data(data)
+            await update.message.reply_text("✅ গ্রুপ রুলস সেট হয়েছে। এখন থেকে ওয়ার্নিং এর নিচে এটা দেখাবে।")
     context.user_data["awaiting"] = None
+    raise ApplicationHandlerStop
 
 async def whitelist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
