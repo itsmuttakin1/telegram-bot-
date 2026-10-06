@@ -8,7 +8,5 @@ services:
     envVars:
       - key: BOT_TOKEN
         sync: false
-      - key: GEMINI_API_KEY
-        sync: false
       - key: ADMIN_ID
         value: "5140546628"
