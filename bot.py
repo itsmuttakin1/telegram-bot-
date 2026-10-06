@@ -5,7 +5,7 @@ import asyncio
 import logging
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from telegram import Update, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ChatMemberHandler,
     CallbackQueryHandler, ContextTypes, filters, ApplicationHandlerStop
@@ -16,21 +16,34 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "5140546628"))
+
+# Dui jon admin access pabe
+ADMIN_IDS = {5140546628, 7728010216}
 
 DATA_FILE = "data.json"
+
+PERMANENT_RULES = (
+    "📜 Group Rules:\n"
+    "❌ কোনো ধরনের Link দেওয়া যাবে না\n"
+    "❌ অন্য Group/Channel-এর Link নিষেধ\n"
+    "❌ Spam করা যাবে না\n"
+    "❌ Promotion করা যাবে না\n"
+    "❌ অপ্রয়োজনীয় Message দেওয়া যাবে না\n\n"
+    "⚠️ Rules ভাঙলে Message Delete + Restrict/Ban করা হতে পারে।\n\n"
+    "🔥 New Viral Videos পেতে Group-এ Active থাকুন!\n\n"
+    "❤️ Respect Everyone & Enjoy the Group!"
+)
 
 DEFAULT_DATA = {
     "welcome": "ওয়েলকাম {name}! গ্রুপে স্বাগতম 🎉",
     "goodbye": "{name} গ্রুপ থেকে চলে গেলেন। বিদায় 👋",
-    "warnings": {},   # user_id(str) -> count
-    "banned": {},      # user_id(str) -> {"reason": str, "chat_id": int/str}
+    "warnings": {},          # "chat_id:user_id" -> count
+    "banned": {},            # user_id(str) -> {"reason": str, "chat_id": int/str}
     "antilink_enabled": True,
     "whitelist_links": [],   # domains allowed
     "button_text": "Video Channel",
     "button_url": "",        # empty = button hidden
-    "rules": "",              # empty = no rules shown
-    "channel_id": "",         # numeric id (e.g. -100...) or @username
+    "channels": [],          # Multiple channel IDs/Usernames list
 }
 
 def load_data():
@@ -39,20 +52,25 @@ def load_data():
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 saved = json.load(f)
+            # Migration from single channel_id to channels list
+            if "channel_id" in saved and saved["channel_id"]:
+                merged["channels"] = [saved["channel_id"]]
             merged.update(saved)
+            if not isinstance(merged.get("channels"), list):
+                merged["channels"] = [merged["channels"]] if merged.get("channels") else []
         except Exception as e:
             logger.error(f"Error loading data.json: {e}")
     return merged
 
-def save_data(data):
+def save_data(data_obj):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        json.dump(data_obj, f, ensure_ascii=False, indent=2)
 
 data = load_data()
 
-# ---------- Helper ----------
+# ---------- Helper Functions ----------
 def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_ID
+    return user_id in ADMIN_IDS
 
 async def is_group_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
     try:
@@ -61,24 +79,11 @@ async def is_group_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, use
     except Exception:
         return False
 
-def get_target_chat_id(raw_id: str):
+def format_target_chat(raw_id: str):
     raw = str(raw_id).strip()
     if raw.startswith("-") or raw.isdigit():
         return int(raw)
     return raw
-
-async def can_user_post(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    if is_admin(user_id):
-        return True
-    channel = data.get("channel_id", "").strip()
-    if not channel:
-        return False
-    try:
-        target_chat = get_target_chat_id(channel)
-        member = await context.bot.get_chat_member(target_chat, user_id)
-        return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
-    except Exception:
-        return False
 
 async def delete_message_after_delay(chat_id: int, message_id: int, context: ContextTypes.DEFAULT_TYPE, delay_seconds: int = 60):
     try:
@@ -87,7 +92,7 @@ async def delete_message_after_delay(chat_id: int, message_id: int, context: Con
     except Exception as e:
         logger.debug(f"Auto delete message failed or already deleted: {e}")
 
-# ---------- Welcome / Goodbye (Group Only + 1 Min Auto-Delete) ----------
+# ---------- Welcome / Goodbye (Groups Only + 1-Min Auto-Delete) ----------
 def extra_button_markup():
     url = data.get("button_url", "").strip()
     if not url:
@@ -133,9 +138,9 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             asyncio.create_task(delete_message_after_delay(chat.id, sent_msg.message_id, context, 60))
         except Exception as e:
-            logger.error(f"Welcome message error: {e}")
+            logger.error(f"Welcome message error in {chat.id}: {e}")
 
-    # User Left / Removed
+    # User Left
     elif old_status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.RESTRICTED) and new_status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED):
         text = data.get("goodbye", DEFAULT_DATA["goodbye"]).format(
             name=user.full_name or "মেম্বার", 
@@ -149,7 +154,7 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             asyncio.create_task(delete_message_after_delay(chat.id, sent_msg.message_id, context, 60))
         except Exception as e:
-            logger.error(f"Goodbye message error: {e}")
+            logger.error(f"Goodbye message error in {chat.id}: {e}")
 
 async def greet_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -162,13 +167,13 @@ async def greet_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
             continue
         if str(member.id) in data["banned"]:
             try:
-                await context.bot.ban_chat_member(update.effective_chat.id, member.id)
+                await context.bot.ban_chat_member(chat.id, member.id)
             except Exception:
                 pass
             continue
         text = data.get("welcome", DEFAULT_DATA["welcome"]).format(
             name=member.mention_html(), 
-            group=update.effective_chat.title or "গ্রুপ"
+            group=chat.title or "গ্রুপ"
         )
         sent_msg = await update.message.reply_html(text, reply_markup=extra_button_markup())
         asyncio.create_task(delete_message_after_delay(chat.id, sent_msg.message_id, context, 60))
@@ -184,7 +189,7 @@ async def farewell_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     text = data.get("goodbye", DEFAULT_DATA["goodbye"]).format(
         name=member.full_name or "মেম্বার", 
-        group=update.effective_chat.title or "গ্রুপ"
+        group=chat.title or "গ্রুপ"
     )
     sent_msg = await update.message.reply_text(text, reply_markup=extra_button_markup())
     asyncio.create_task(delete_message_after_delay(chat.id, sent_msg.message_id, context, 60))
@@ -192,32 +197,33 @@ async def farewell_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- Warning / Ban ----------
 async def issue_warning(update: Update, context: ContextTypes.DEFAULT_TYPE, target, reason: str):
     chat = update.effective_chat
-    uid = str(target.id)
-    data["warnings"][uid] = data["warnings"].get(uid, 0) + 1
-    count = data["warnings"][uid]
+    warn_key = f"{chat.id}:{target.id}"
+    data["warnings"][warn_key] = data["warnings"].get(warn_key, 0) + 1
+    count = data["warnings"][warn_key]
     save_data(data)
 
     if count >= 3:
         try:
             await context.bot.ban_chat_member(chat.id, target.id)
-            data["banned"][uid] = {"reason": reason, "chat_id": chat.id}
-            data["warnings"][uid] = 0
+            data["banned"][str(target.id)] = {"reason": reason, "chat_id": chat.id}
+            data["warnings"][warn_key] = 0
             save_data(data)
-            await update.effective_chat.send_message(
+            await chat.send_message(
                 f"⛔ {target.mention_html()} কে ৩টি ওয়ার্নিং এর কারনে ব্যান করা হলো।\nকারণ: {reason}",
                 parse_mode="HTML"
             )
         except Exception as e:
-            await update.effective_chat.send_message(f"ব্যান করতে সমস্যা হয়েছে: {e}")
+            await chat.send_message(f"ব্যান করতে সমস্যা হয়েছে: {e}")
     else:
-        warn_text = f"⚠️ {target.mention_html()} কে ওয়ার্নিং দেওয়া হলো। ({count}/3)\nকারণ: {reason}"
-        rules = data.get("rules", "").strip()
-        if rules:
-            warn_text += f"\n\n📜 গ্রুপ রুলস:\n{rules}"
-        await update.effective_chat.send_message(warn_text, parse_mode="HTML")
+        warn_text = (
+            f"⚠️ {target.mention_html()} কে ওয়ার্নিং দেওয়া হলো। ({count}/3)\n"
+            f"কারণ: {reason}\n\n"
+            f"{PERMANENT_RULES}"
+        )
+        await chat.send_message(warn_text, parse_mode="HTML")
 
 async def warn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_group_admin(update, context, update.effective_user.id):
+    if not await is_group_admin(update, context, update.effective_user.id) and not is_admin(update.effective_user.id):
         await update.message.reply_text("শুধু গ্রুপ এডমিনরা এই কমান্ড ব্যবহার করতে পারবে।")
         return
     if not update.message.reply_to_message:
@@ -228,7 +234,7 @@ async def warn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
-    if not await is_group_admin(update, context, update.effective_user.id):
+    if not await is_group_admin(update, context, update.effective_user.id) and not is_admin(update.effective_user.id):
         await update.message.reply_text("শুধু গ্রুপ এডমিনরা এই কমান্ড ব্যবহার করতে পারবে।")
         return
     if not update.message.reply_to_message:
@@ -262,7 +268,7 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"সমস্যা: {e}")
 
-# ---------- Anti-link / Anti-promo auto-mod ----------
+# ---------- Anti-link / Anti-promo Auto-mod ----------
 LINK_PATTERN = re.compile(
     r"(https?://\S+|www\.\S+|t\.me/\S+|telegram\.me/\S+|\S+\.(com|net|org|io|xyz|info|co|gg|me|app)\b)",
     re.IGNORECASE
@@ -299,7 +305,7 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg or update.effective_chat.type not in ("group", "supergroup"):
         return
     user = update.effective_user
-    if not user or user.id == ADMIN_ID or user.is_bot:
+    if not user or is_admin(user.id) or user.is_bot:
         return
     if await is_group_admin(update, context, user.id):
         return
@@ -332,7 +338,7 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await issue_warning(update, context, user, reason)
     raise ApplicationHandlerStop
 
-# ---------- Channel Post System ----------
+# ---------- Multi-Channel Post System ----------
 def _post_draft(context: ContextTypes.DEFAULT_TYPE, user_id: int):
     drafts = context.bot_data.setdefault("post_draft", {})
     return drafts.get(user_id)
@@ -343,12 +349,17 @@ def post_editor_markup(draft):
         rows.append([InlineKeyboardButton(f"❌ {btn['text']}", callback_data=f"post_rm_{i}")])
     if len(draft["buttons"]) < 4:
         rows.append([InlineKeyboardButton("➕ বাটন যোগ করুন", callback_data="post_add_btn")])
-    rows.append([InlineKeyboardButton("✅ চ্যানেলে পোস্ট করুন", callback_data="post_publish")])
+    rows.append([InlineKeyboardButton("✅ সব চ্যানেলে পোস্ট করুন", callback_data="post_publish")])
     rows.append([InlineKeyboardButton("❌ বাতিল করুন", callback_data="post_cancel")])
     return InlineKeyboardMarkup(rows)
 
 def post_preview_text(draft):
-    lines = ["📋 পোস্ট প্রিভিউ", f"ক্যাপশন: {draft['caption'] or '(খালি)'}"]
+    channels_count = len(data.get("channels", []))
+    lines = [
+        "📋 পোস্ট প্রিভিউ",
+        f"🎯 টার্গেট চ্যানেল সংখ্যা: {channels_count} টি",
+        f"ক্যাপশন: {draft['caption'] or '(খালি)'}"
+    ]
     if draft["buttons"]:
         lines.append("বাটন:")
         for b in draft["buttons"]:
@@ -359,32 +370,26 @@ def post_preview_text(draft):
 
 async def post_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not await can_user_post(user_id, context):
-        await update.message.reply_text("শুধু চ্যানেলের এডমিনরা পোস্ট তৈরি করতে পারবে।")
+    if not is_admin(user_id):
         return
     await start_post_flow(update, context)
 
 async def start_post_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not data.get("channel_id", "").strip():
-        if is_admin(user_id):
-            context.user_data["awaiting"] = "channel_id"
-            await update.effective_message.reply_text(
-                "প্রথমে পোস্ট চ্যানেল সেট করতে হবে।\nপ্রাইভেট চ্যানেলের আইডি পাঠান (যেমন: -100xxxxxxxxxx)।\n"
-                "⚠️ বট কে অবশ্যই চ্যানেলে Administrator (Post messages পারমিশন সহ) বানাতে হবে।"
-            )
-        else:
-            await update.effective_message.reply_text("মেইন এডমিন এখনো কোনো পোস্ট চ্যানেল সেট করেনি।")
+    if not data.get("channels"):
+        await update.effective_message.reply_text(
+            "⚠️️ কোনো চ্যানেল যোগ করা নেই!\n/ad প্যানেল থেকে '🎯 চ্যানেল ম্যানেজ করুন' চাপুন এবং চ্যানেল আইডি যোগ করুন।"
+        )
         return
     context.bot_data.setdefault("post_draft", {})[user_id] = None
     context.user_data["awaiting"] = "post_video"
     await update.effective_message.reply_text(
-        "ভিডিও অথবা ছবি পাঠান যেটা চ্যানেলে পোস্ট করতে চান (ক্যাপশনসহ পাঠাতে পারেন)।\nবাতিল করতে /cancel লিখুন।"
+        "ভিডিও অথবা ছবি পাঠান যেটা সব চ্যানেলে পোস্ট করতে চান (ক্যাপশনসহ পাঠাতে পারেন)।\nবাতিল করতে /cancel লিখুন।"
     )
 
 async def post_video_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not await can_user_post(user_id, context):
+    if not is_admin(user_id):
         return
     if context.user_data.get("awaiting") != "post_video":
         return
@@ -403,14 +408,15 @@ async def post_video_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not await can_user_post(user_id, context):
+    if not is_admin(user_id):
         return
     context.user_data["awaiting"] = None
     context.bot_data.setdefault("post_draft", {})[user_id] = None
     await update.message.reply_text("❌ বাতিল করা হয়েছে।")
 
-# ---------- Admin Panel & Banned List Helpers ----------
+# ---------- Admin Panel & Menus ----------
 def admin_panel_markup():
+    channel_count = len(data.get("channels", []))
     kb = [
         [InlineKeyboardButton("✏️ Welcome মেসেজ সেট", callback_data="set_welcome")],
         [InlineKeyboardButton("✏️ Goodbye মেসেজ সেট", callback_data="set_goodbye")],
@@ -421,14 +427,28 @@ def admin_panel_markup():
             callback_data="toggle_antilink"
         )],
         [InlineKeyboardButton("🔘 Welcome/Goodbye বাটন সেট", callback_data="set_button")],
-        [InlineKeyboardButton("📜 গ্রুপ রুলস সেট", callback_data="set_rules")],
+        [InlineKeyboardButton(f"🎯 চ্যানেল ম্যানেজ করুন ({channel_count} টি)", callback_data="manage_channels")],
         [InlineKeyboardButton("📢 চ্যানেলে নতুন পোস্ট বানান", callback_data="new_post")],
-        [InlineKeyboardButton("🎯 পোস্ট চ্যানেল পরিবর্তন", callback_data="set_channel")],
     ]
     return InlineKeyboardMarkup(kb)
 
+def get_channels_markup():
+    channels = data.get("channels", [])
+    kb = []
+    if channels:
+        for idx, ch in enumerate(channels):
+            kb.append([InlineKeyboardButton(f"❌ সরান: {ch}", callback_data=f"rm_channel_{idx}")])
+    kb.append([InlineKeyboardButton("➕ নতুন চ্যানেল যোগ করুন", callback_data="add_channel")])
+    kb.append([InlineKeyboardButton("🔙 ফিরে যান", callback_data="back_to_panel")])
+    
+    text = (
+        "🎯 **টার্গেট চ্যানেল লিস্ট:**\n\n"
+        + ("\n".join(f"{i+1}. `{ch}`" for i, ch in enumerate(channels)) if channels else "কোনো চ্যানেল যোগ করা নেই।")
+        + "\n\n⚠️ বটকে অবশ্যই প্রতিটা চ্যানেলে Administrator (Post messages পারমিশন সহ) বানাতে হবে।"
+    )
+    return text, InlineKeyboardMarkup(kb)
+
 def get_banned_list_markup():
-    """ব্যান লিস্ট এবং প্রতি ইউজারের পাশে আনব্যান বাটন জেনারেট করে"""
     banned_items = data.get("banned", {})
     if not banned_items:
         text = "🚫 ব্যান লিস্ট:\nকোনো ব্যান করা ইউজার নেই।"
@@ -447,7 +467,7 @@ def get_banned_list_markup():
 
 async def ad_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("এই কমান্ড শুধু মেইন এডমিনের জন্য।")
+        await update.message.reply_text("এই কমান্ড শুধু এডমিনদের জন্য।")
         return
     await update.message.reply_text("🛠 অ্যাডমিন প্যানেল", reply_markup=admin_panel_markup())
 
@@ -457,12 +477,12 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     action = query.data
 
-    # Channel Admin post actions
-    if action in ("new_post", "post_add_btn", "post_cancel", "post_publish") or action.startswith("post_rm_"):
-        if not await can_user_post(user_id, context):
-            await query.edit_message_text("অনুমতি নেই। শুধু চ্যানেল এডমিনরা পোস্ট করতে পারবে।")
-            return
+    if not is_admin(user_id):
+        await query.edit_message_text("অনুমতি নেই।")
+        return
 
+    # Post creation flow actions
+    if action in ("new_post", "post_add_btn", "post_cancel", "post_publish") or action.startswith("post_rm_"):
         if action == "new_post":
             await start_post_flow(update, context)
             return
@@ -490,44 +510,64 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["awaiting"] = None
             await query.edit_message_text("❌ পোস্ট বাতিল করা হয়েছে।")
         elif action == "post_publish":
-            channel = data.get("channel_id", "").strip()
-            if not channel:
-                await query.edit_message_text("চ্যানেল সেট করা নেই।")
+            channels = data.get("channels", [])
+            if not channels:
+                await query.edit_message_text("কোনো চ্যানেল সেট করা নেই।")
                 return
 
-            chat_target = get_target_chat_id(channel)
             markup = None
             if draft["buttons"]:
                 rows = [[InlineKeyboardButton(b["text"], url=b["url"])] for b in draft["buttons"]]
                 markup = InlineKeyboardMarkup(rows)
-            try:
-                if draft["kind"] == "video":
-                    await context.bot.send_video(
-                        chat_id=chat_target, video=draft["file_id"],
-                        caption=draft["caption"] or None, reply_markup=markup
-                    )
-                else:
-                    await context.bot.send_photo(
-                        chat_id=chat_target, photo=draft["file_id"],
-                        caption=draft["caption"] or None, reply_markup=markup
-                    )
-                context.bot_data.setdefault("post_draft", {})[user_id] = None
-                await query.edit_message_text(f"✅ চ্যানেলে ({channel}) পোস্ট সফলভাবে হয়ে গেছে।")
-            except Exception as e:
-                await query.edit_message_text(
-                    f"❌ পোস্ট করতে সমস্যা হয়েছে: {e}\n\n"
-                    f"১. চ্যানেলের আইডি ঠিক আছে কিনা চেক করুন (-100 সহ)।\n"
-                    f"২. বট ওই চ্যানেলে Post permission সহ Admin আছে কিনা চেক করুন।"
-                )
+
+            success_count, fail_count = 0, 0
+            for ch in channels:
+                chat_target = format_target_chat(ch)
+                try:
+                    if draft["kind"] == "video":
+                        await context.bot.send_video(
+                            chat_id=chat_target, video=draft["file_id"],
+                            caption=draft["caption"] or None, reply_markup=markup
+                        )
+                    else:
+                        await context.bot.send_photo(
+                            chat_id=chat_target, photo=draft["file_id"],
+                            caption=draft["caption"] or None, reply_markup=markup
+                        )
+                    success_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to post in {ch}: {e}")
+                    fail_count += 1
+
+            context.bot_data.setdefault("post_draft", {})[user_id] = None
+            await query.edit_message_text(
+                f"✅ পোস্ট প্রক্রিয়া সম্পন্ন!\n\n"
+                f"সফল হয়েছে: {success_count} টি চ্যানেলে\n"
+                f"ব্যর্থ হয়েছে: {fail_count} টি চ্যানেলে"
+            )
         return
 
-    # Settings for Main Admin
-    if not is_admin(user_id):
-        await query.edit_message_text("অনুমতি নেই।")
-        return
-
+    # Panel Navigation & Settings
     if action == "back_to_panel":
         await query.edit_message_text("🛠 অ্যাডমিন প্যানেল", reply_markup=admin_panel_markup())
+    elif action == "manage_channels":
+        text, markup = get_channels_markup()
+        await query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+    elif action == "add_channel":
+        context.user_data["awaiting"] = "add_channel"
+        await query.edit_message_text(
+            "চ্যানেলের আইডি বা ইউজারনেম পাঠান (প্রাইভেট চ্যানেল হলে -100 দিয়ে শুরু আইডি দিন):\n\n"
+            "উদাহরণ: `-1002345678901` অথবা `@mychannel`"
+        )
+    elif action.startswith("rm_channel_"):
+        idx = int(action.replace("rm_channel_", ""))
+        channels = data.get("channels", [])
+        if 0 <= idx < len(channels):
+            removed = channels.pop(idx)
+            save_data(data)
+            await query.answer(f"❌ চ্যানেল {removed} সরানো হয়েছে!", show_alert=True)
+        text, markup = get_channels_markup()
+        await query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
     elif action == "view_banned":
         text, markup = get_banned_list_markup()
         await query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
@@ -535,19 +575,16 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         target_uid = action.replace("unban_user_", "")
         ban_info = data.get("banned", {}).get(target_uid)
         
-        # গ্রুপ থেকে আনব্যান করা
         if isinstance(ban_info, dict) and ban_info.get("chat_id"):
             try:
                 await context.bot.unban_chat_member(ban_info["chat_id"], int(target_uid))
             except Exception as e:
-                logger.warning(f"Failed to unban {target_uid} in telegram chat: {e}")
+                logger.warning(f"Failed to unban {target_uid}: {e}")
 
-        # ডেটা থেকে রিমুভ
         data.get("banned", {}).pop(target_uid, None)
         save_data(data)
         await query.answer(f"✅ ইউজার {target_uid} কে আনব্যান করা হয়েছে!", show_alert=True)
         
-        # লিস্ট রিফ্রেশ করা
         text, markup = get_banned_list_markup()
         await query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
     elif action == "set_welcome":
@@ -564,7 +601,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not data["warnings"]:
             txt = "কোনো ওয়ার্নিং নেই।"
         else:
-            txt = "⚠️ ওয়ার্নিং লিস্ট:\n" + "\n".join(f"- {uid}: {c}" for uid, c in data["warnings"].items())
+            txt = "⚠️ ওয়ার্নিং লিস্ট:\n" + "\n".join(f"- {k}: {c}" for k, c in data["warnings"].items() if c > 0)
         await query.edit_message_text(txt, reply_markup=admin_panel_markup())
     elif action == "toggle_antilink":
         data["antilink_enabled"] = not data.get("antilink_enabled", True)
@@ -581,32 +618,14 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"বর্তমান বাটন নাম: {cur_text}\nবর্তমান লিংক: {cur_url}\n\n"
             "বাটন বন্ধ করতে শুধু লিখুন: off"
         )
-    elif action == "set_rules":
-        context.user_data["awaiting"] = "rules"
-        cur_rules = data.get("rules", "") or "(সেট করা নেই)"
-        await query.edit_message_text(
-            "নতুন গ্রুপ রুলস পাঠান — কেউ ওয়ার্নিং খেলে এই টেক্সট মেসেজের নিচে দেখানো হবে।\n\n"
-            f"বর্তমান রুলস:\n{cur_rules}\n\n"
-            "রুলস বন্ধ করতে শুধু লিখুন: off"
-        )
-    elif action == "set_channel":
-        context.user_data["awaiting"] = "channel_id"
-        cur = data.get("channel_id", "") or "(সেট করা নেই)"
-        await query.edit_message_text(
-            "প্রাইভেট চ্যানেলের আইডি পাঠান (যেমন: -100xxxxxxxxxx)।\n"
-            "⚠️️ বট কে অবশ্যই চ্যানেলে Post Messages পারমিশন সহ Admin বানাতে হবে।\n\n"
-            f"বর্তমান চ্যানেল: {cur}"
-        )
 
 async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
     awaiting = context.user_data.get("awaiting")
     user_id = update.effective_user.id
-    if not awaiting:
+    if not awaiting or not is_admin(user_id):
         return
 
     if awaiting == "post_button":
-        if not await can_user_post(user_id, context):
-            return
         draft = _post_draft(context, user_id)
         if not draft:
             await update.message.reply_text("পোস্ট খুঁজে পাওয়া যায়নি, আবার /post দিয়ে শুরু করুন।")
@@ -633,10 +652,19 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data["awaiting"] = None
         raise ApplicationHandlerStop
 
-    if not is_admin(user_id):
-        return
+    elif awaiting == "add_channel":
+        raw = update.message.text.strip()
+        if raw.isdigit():
+            raw = f"-100{raw}"
+        channels = data.setdefault("channels", [])
+        if raw in channels:
+            await update.message.reply_text("⚠️ এই চ্যানেল আগে থেকেই লিস্টে আছে!")
+        else:
+            channels.append(raw)
+            save_data(data)
+            await update.message.reply_text(f"✅ নতুন চ্যানেল যোগ হয়েছে: `{raw}`", parse_mode="Markdown")
 
-    if awaiting == "welcome":
+    elif awaiting == "welcome":
         data["welcome"] = update.message.text
         save_data(data)
         await update.message.reply_text("✅ Welcome মেসেজ সেট হয়েছে।")
@@ -667,25 +695,7 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("❌ ফরম্যাট ভুল। এভাবে পাঠান: বাটন নাম | লিংক")
             context.user_data["awaiting"] = "button"
             return
-    elif awaiting == "rules":
-        raw = update.message.text.strip()
-        if raw.lower() == "off":
-            data["rules"] = ""
-            save_data(data)
-            await update.message.reply_text("✅ গ্রুপ রুলস বন্ধ করা হয়েছে।")
-        else:
-            data["rules"] = update.message.text
-            save_data(data)
-            await update.message.reply_text("✅ গ্রুপ রুলস সেট হয়েছে। এখন থেকে ওয়ার্নিং এর নিচে এটা দেখাবে।")
-    elif awaiting == "channel_id":
-        raw = update.message.text.strip()
-        if raw.isdigit():
-            raw = f"-100{raw}"
-        data["channel_id"] = raw
-        save_data(data)
-        await update.message.reply_text(
-            f"✅ পোস্ট চ্যানেল আইডি সেট হয়েছে: {raw}\n\nএখন /post কমান্ড দিয়ে পোস্ট করা শুরু করতে পারেন।"
-        )
+
     context.user_data["awaiting"] = None
     raise ApplicationHandlerStop
 
@@ -753,7 +763,7 @@ def main():
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, greet_new_member))
     app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, farewell_member))
 
-    # Admin Callback Queries (Unban, Post, Admin Panel)
+    # Admin Callback Queries
     app.add_handler(CallbackQueryHandler(admin_callback))
 
     # Admin private video/photo capture
