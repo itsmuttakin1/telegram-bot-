@@ -23,17 +23,21 @@ git remote add origin https://github.com/<your-username>/<repo-name>.git
 git push -u origin main
 ```
 
-## Render এ ডিপ্লয়
+## Render এ ডিপ্লয় (Web Service — ফ্রি)
 1. render.com এ লগইন করুন
-2. New → Blueprint → আপনার GitHub রিপো সিলেক্ট করুন (render.yaml অটো ডিটেক্ট হবে)
-   বা New → Background Worker → রিপো কানেক্ট করুন
+2. New → Web Service → আপনার GitHub রিপো কানেক্ট করুন
    - Build Command: `pip install -r requirements.txt`
    - Start Command: `python bot.py`
+   - Instance Type: **Free**
 3. Environment ভ্যারিয়েবল সেট করুন:
    - `BOT_TOKEN` → @BotFather থেকে পাওয়া টোকেন
    - `GEMINI_API_KEY` → নতুন (revoke করার পর জেনারেট করা) key
    - `ADMIN_ID` → 5140546628 (আগে থেকেই render.yaml এ আছে)
 4. Deploy চাপুন
+
+⚠️ **ফ্রি Web Service এর সীমাবদ্ধতা:** ১৫ মিনিট কোনো HTTP রিকোয়েস্ট না পেলে Render সার্ভিসটা "spin down" করে দেয় (ঘুমিয়ে যায়)। বট তখন অফলাইন হয়ে যাবে, এবং পরবর্তী রিকোয়েস্টে জাগতে ৫০ সেকেন্ড+ লাগতে পারে। এটা এড়াতে চাইলে:
+- একটা ফ্রি uptime monitor (যেমন UptimeRobot, cron-job.org) দিয়ে প্রতি ১০-১৪ মিনিটে আপনার Render URL এ (যেমন `https://your-app.onrender.com`) পিং করান — bot.py তে একটা `/` হেলথ এন্ডপয়েন্ট আগে থেকেই আছে যেটা `"Bot is running"` রিটার্ন করে
+- অথবা সবচেয়ে নির্ভরযোগ্য সমাধান: **Background Worker** ($7/month) — কখনো ঘুমায় না, কোনো HTTP দরকার নেই
 
 ## BotFather এ সেটিংস
 - বট কে গ্রুপে অ্যাড করুন
