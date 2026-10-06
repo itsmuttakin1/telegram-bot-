@@ -10,7 +10,7 @@ from telegram.ext import (
     Application, CommandHandler, MessageHandler, ChatMemberHandler,
     CallbackQueryHandler, ContextTypes, filters, ApplicationHandlerStop
 )
-from telegram.constants import MessageEntityType
+from telegram.constants import MessageEntityType, ChatMemberStatus
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -26,19 +26,22 @@ DEFAULT_DATA = {
     "warnings": {},   # user_id(str) -> count
     "banned": {},      # user_id(str) -> reason
     "antilink_enabled": True,
-    "whitelist_links": [],   # domains allowed, e.g. "t.me/yourchannel"
+    "whitelist_links": [],   # domains allowed
     "button_text": "Video Channel",
-    "button_url": "",        # empty = button hidden until admin sets a URL
-    "rules": "",              # empty = no rules shown under warnings
-    "channel_id": "",         # channel username (@mychannel) or numeric id, bot must be admin there
+    "button_url": "",        # empty = button hidden
+    "rules": "",              # empty = no rules shown
+    "channel_id": "",         # numeric id (e.g. -100...) or @username
 }
 
 def load_data():
     merged = dict(DEFAULT_DATA)
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            saved = json.load(f)
-        merged.update(saved)
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            merged.update(saved)
+        except Exception as e:
+            logger.error(f"Error loading data.json: {e}")
     return merged
 
 def save_data(data):
@@ -54,9 +57,15 @@ def is_admin(user_id: int) -> bool:
 async def is_group_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
     try:
         member = await context.bot.get_chat_member(update.effective_chat.id, user_id)
-        return member.status in ("administrator", "creator")
+        return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
     except Exception:
         return False
+
+def get_target_chat_id(raw_id: str):
+    raw = str(raw_id).strip()
+    if raw.startswith("-") or raw.isdigit():
+        return int(raw)
+    return raw
 
 # ---------- Welcome / Goodbye ----------
 def extra_button_markup():
@@ -66,26 +75,91 @@ def extra_button_markup():
     text = data.get("button_text", "Video Channel").strip() or "Video Channel"
     return InlineKeyboardMarkup([[InlineKeyboardButton(text, url=url)]])
 
+# ChatMemberHandler diye join/leave dhora (Supergroup ar Regular group sob jaygay kaj korbe)
+async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    result = update.chat_member
+    if not result:
+        return
+
+    chat = update.effective_chat
+    user = result.new_chat_member.user
+    if user.is_bot:
+        return
+
+    old_status = result.old_chat_member.status
+    new_status = result.new_chat_member.status
+
+    # User Joined
+    if old_status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED) and new_status in (ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED):
+        if str(user.id) in data["banned"]:
+            try:
+                await context.bot.ban_chat_member(chat.id, user.id)
+            except Exception:
+                pass
+            return
+        
+        text = data.get("welcome", DEFAULT_DATA["welcome"]).format(
+            name=user.mention_html(), 
+            group=chat.title or "গ্রুপ"
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=text,
+                parse_mode="HTML",
+                reply_markup=extra_button_markup()
+            )
+        except Exception as e:
+            logger.error(f"Welcome message error: {e}")
+
+    # User Left / Removed
+    elif old_status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.RESTRICTED) and new_status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED):
+        text = data.get("goodbye", DEFAULT_DATA["goodbye"]).format(
+            name=user.full_name or "মেম্বার", 
+            group=chat.title or "গ্রুপ"
+        )
+        try:
+            await context.bot.send_message(
+                chat_id=chat.id,
+                text=text,
+                reply_markup=extra_button_markup()
+            )
+        except Exception as e:
+            logger.error(f"Goodbye message error: {e}")
+
+# Fallback service message handler
 async def greet_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.new_chat_members:
+        return
     for member in update.message.new_chat_members:
+        if member.is_bot:
+            continue
         if str(member.id) in data["banned"]:
             try:
                 await context.bot.ban_chat_member(update.effective_chat.id, member.id)
             except Exception:
                 pass
             continue
-        text = data["welcome"].format(name=member.mention_html(), group=update.effective_chat.title)
+        text = data.get("welcome", DEFAULT_DATA["welcome"]).format(
+            name=member.mention_html(), 
+            group=update.effective_chat.title or "গ্রুপ"
+        )
         await update.message.reply_html(text, reply_markup=extra_button_markup())
 
 async def farewell_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.left_chat_member:
+        return
     member = update.message.left_chat_member
-    if member:
-        text = data["goodbye"].format(name=member.full_name, group=update.effective_chat.title)
-        await update.message.reply_text(text, reply_markup=extra_button_markup())
+    if member.is_bot:
+        return
+    text = data.get("goodbye", DEFAULT_DATA["goodbye"]).format(
+        name=member.full_name or "মেম্বার", 
+        group=update.effective_chat.title or "গ্রুপ"
+    )
+    await update.message.reply_text(text, reply_markup=extra_button_markup())
 
 # ---------- Warning / Ban ----------
 async def issue_warning(update: Update, context: ContextTypes.DEFAULT_TYPE, target, reason: str):
-    """Core warn logic — used by /warn command and by auto-mod. Bans at 3."""
     chat = update.effective_chat
     uid = str(target.id)
     data["warnings"][uid] = data["warnings"].get(uid, 0) + 1
@@ -190,7 +264,7 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg or update.effective_chat.type not in ("group", "supergroup"):
         return
     user = update.effective_user
-    if user.id == ADMIN_ID or user.is_bot:
+    if not user or user.id == ADMIN_ID or user.is_bot:
         return
     if await is_group_admin(update, context, user.id):
         return
@@ -221,16 +295,9 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.warning(f"delete failed: {e}")
 
     await issue_warning(update, context, user, reason)
-    raise ApplicationHandlerStop  # stop further handlers (e.g. AI auto-reply) for this update
+    raise ApplicationHandlerStop
 
 # ---------- Channel Post System ----------
-# context.bot_data["post_draft"][admin_user_id] = {
-#     "kind": "video" | "photo",
-#     "file_id": str,
-#     "caption": str,
-#     "buttons": [{"text": str, "url": str}, ...]   # max 4
-# }
-
 def _post_draft(context: ContextTypes.DEFAULT_TYPE):
     drafts = context.bot_data.setdefault("post_draft", {})
     return drafts.get(ADMIN_ID)
@@ -264,14 +331,14 @@ async def start_post_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not data.get("channel_id", "").strip():
         context.user_data["awaiting"] = "channel_id"
         await update.effective_message.reply_text(
-            "প্রথমে পোস্ট চ্যানেল সেট করতে হবে।\nচ্যানেলের ইউজারনেম (@mychannel) অথবা numeric ID পাঠান।\n"
-            "⚠️ বট কে অবশ্যই ওই চ্যানেলে Admin (Post permission সহ) বানাতে হবে।"
+            "প্রথমে পোস্ট চ্যানেল সেট করতে হবে।\nপ্রাইভেট চ্যানেলের আইডি পাঠান (যেমন: -100xxxxxxxxxx)।\n"
+            "⚠️ বট কে অবশ্যই চ্যানেলে Administrator (Post messages পারমিশন সহ) বানাতে হবে।"
         )
         return
     context.bot_data.setdefault("post_draft", {})[ADMIN_ID] = None
     context.user_data["awaiting"] = "post_video"
     await update.effective_message.reply_text(
-        "ভিডিও পাঠান যেটা চ্যানেলে পোস্ট করতে চান (ক্যাপশনসহ পাঠাতে পারেন)।\nবাতিল করতে /cancel লিখুন।"
+        "ভিডিও অথবা ছবি পাঠান যেটা চ্যানেলে পোস্ট করতে চান (ক্যাপশনসহ পাঠাতে পারেন)।\nবাতিল করতে /cancel লিখুন।"
     )
 
 async def post_video_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -380,22 +447,22 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting"] = "channel_id"
         cur = data.get("channel_id", "") or "(সেট করা নেই)"
         await query.edit_message_text(
-            "চ্যানেলের ইউজারনেম (@mychannel) অথবা numeric ID পাঠান।\n"
-            "⚠️ বট কে অবশ্যই ওই চ্যানেলে Admin (Post permission সহ) বানাতে হবে।\n\n"
+            "প্রাইভেট চ্যানেলের আইডি পাঠান (যেমন: -100xxxxxxxxxx)।\n"
+            "⚠️️ বট কে অবশ্যই চ্যানেলে Post Messages পারমিশন সহ Admin বানাতে হবে।\n\n"
             f"বর্তমান চ্যানেল: {cur}"
         )
     elif action == "new_post":
         if not data.get("channel_id", "").strip():
             context.user_data["awaiting"] = "channel_id"
             await query.edit_message_text(
-                "প্রথমে পোস্ট চ্যানেল সেট করতে হবে।\nচ্যানেলের ইউজারনেম (@mychannel) অথবা numeric ID পাঠান।\n"
-                "⚠️ বট কে অবশ্যই ওই চ্যানেলে Admin বানাতে হবে।"
+                "প্রথমে পোস্ট চ্যানেল সেট করতে হবে।\nপ্রাইভেট চ্যানেলের আইডি পাঠান (যেমন: -100xxxxxxxxxx)।\n"
+                "⚠️ বট কে অবশ্যই চ্যানেলে Admin বানাতে হবে।"
             )
             return
         context.bot_data.setdefault("post_draft", {})[ADMIN_ID] = None
         context.user_data["awaiting"] = "post_video"
         await query.edit_message_text(
-            "ভিডিও পাঠান যেটা চ্যানেলে পোস্ট করতে চান (ক্যাপশনসহ পাঠাতে পারেন)।\nবাতিল করতে /cancel লিখুন।"
+            "ভিডিও অথবা ছবি পাঠান যেটা চ্যানেলে পোস্ট করতে চান (ক্যাপশনসহ পাঠাতে পারেন)।\nবাতিল করতে /cancel লিখুন।"
         )
     elif action == "post_add_btn":
         draft = _post_draft(context)
@@ -431,6 +498,8 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not channel:
             await query.edit_message_text("চ্যানেল সেট করা নেই।")
             return
+
+        chat_target = get_target_chat_id(channel)
         markup = None
         if draft["buttons"]:
             rows = [[InlineKeyboardButton(b["text"], url=b["url"])] for b in draft["buttons"]]
@@ -438,18 +507,23 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             if draft["kind"] == "video":
                 await context.bot.send_video(
-                    chat_id=channel, video=draft["file_id"],
+                    chat_id=chat_target, video=draft["file_id"],
                     caption=draft["caption"] or None, reply_markup=markup
                 )
             else:
                 await context.bot.send_photo(
-                    chat_id=channel, photo=draft["file_id"],
+                    chat_id=chat_target, photo=draft["file_id"],
                     caption=draft["caption"] or None, reply_markup=markup
                 )
             context.bot_data.setdefault("post_draft", {})[ADMIN_ID] = None
-            await query.edit_message_text(f"✅ চ্যানেলে ({channel}) পোস্ট হয়ে গেছে।")
+            await query.edit_message_text(f"✅ চ্যানেলে ({channel}) পোস্ট সফলভাবে হয়ে গেছে।")
         except Exception as e:
-            await query.edit_message_text(f"❌ পোস্ট করতে সমস্যা হয়েছে: {e}\n\nচেক করুন বট চ্যানেলে Admin আছে কিনা।")
+            await query.edit_message_text(
+                f"❌ পোস্ট করতে সমস্যা হয়েছে: {e}\n\n"
+                f"লক্ষ্য করুন:\n"
+                f"১. চ্যানেলের আইডি ঠিক আছে কিনা (প্রাইভেট চ্যানেলে অবশ্যই -100 দিয়ে শুরু হয়)।\n"
+                f"২. বট ওই প্রাইভেট চ্যানেলে Admin এবং 'Post Messages' পারমিশন অন আছে কিনা।"
+            )
 
 async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
     awaiting = context.user_data.get("awaiting")
@@ -498,10 +572,13 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("✅ গ্রুপ রুলস সেট হয়েছে। এখন থেকে ওয়ার্নিং এর নিচে এটা দেখাবে।")
     elif awaiting == "channel_id":
         raw = update.message.text.strip()
+        # Auto-format for negative id if user forgets -100
+        if raw.isdigit():
+            raw = f"-100{raw}"
         data["channel_id"] = raw
         save_data(data)
         await update.message.reply_text(
-            f"✅ পোস্ট চ্যানেল সেট হয়েছে: {raw}\n\n/post লিখে এখনই একটা পোস্ট বানাতে পারেন।"
+            f"✅ পোস্ট চ্যানেল আইডি সেট হয়েছে: {raw}\n\nএখন /post কমান্ড দিয়ে পোস্ট করা শুরু করতে পারেন।"
         )
     elif awaiting == "post_button":
         draft = _post_draft(context)
@@ -551,7 +628,7 @@ async def whitelist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("বট চালু আছে ✅ গ্রুপে যোগ করুন এবং এডমিন করুন।")
 
-# ---------- Tiny HTTP server (Render Web Service health check / keep-alive) ----------
+# ---------- Tiny HTTP server (Keep-alive) ----------
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -560,7 +637,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot is running")
 
     def log_message(self, format, *args):
-        pass  # mute default request logging
+        pass
 
 def start_health_server():
     port = int(os.environ.get("PORT", "10000"))
@@ -569,9 +646,6 @@ def start_health_server():
     logger.info(f"Health server listening on port {port}")
 
 def main():
-    # Python 3.14 removed the implicit event loop on the main thread, which
-    # breaks python-telegram-bot's internal asyncio.get_event_loop() call
-    # inside run_polling(). Create and set one explicitly before that runs.
     try:
         asyncio.get_event_loop()
     except RuntimeError:
@@ -580,6 +654,7 @@ def main():
     start_health_server()
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # Commands
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("ad", ad_cmd))
     app.add_handler(CommandHandler("warn", warn_cmd))
@@ -589,25 +664,32 @@ def main():
     app.add_handler(CommandHandler("post", post_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
 
+    # Real-time Chat Member Status Updates (Welcome & Goodbye for Supergroups/Groups)
+    app.add_handler(ChatMemberHandler(chat_member_update, ChatMemberHandler.CHAT_MEMBER))
+
+    # Fallback status updates
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, greet_new_member))
     app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, farewell_member))
 
+    # Admin Callback Queries
     app.add_handler(CallbackQueryHandler(admin_callback))
 
-    # admin private video/photo capture for channel posts (checked first)
+    # Admin private video/photo capture
     app.add_handler(MessageHandler(
         (filters.VIDEO | filters.PHOTO) & filters.ChatType.PRIVATE, post_video_capture
     ))
-    # admin private text capture (welcome/goodbye/button/rules/channel/post-button flows)
+
+    # Admin private text inputs
     app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, admin_text_capture))
 
-    # anti-link/promo/forward automod in groups
+    # Anti-link/promo automod in groups
     app.add_handler(MessageHandler(
         filters.ChatType.GROUPS & (filters.TEXT | filters.CAPTION) & ~filters.COMMAND,
         anti_link_automod
     ))
 
     logger.info("Bot starting...")
+    # Chat member updates receive korte Update.ALL_TYPES obosshoi thakte hobe
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
