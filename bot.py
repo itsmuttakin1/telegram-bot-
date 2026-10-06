@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import asyncio
 import logging
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -359,6 +360,14 @@ def start_health_server():
     logger.info(f"Health server listening on port {port}")
 
 def main():
+    # Python 3.14 removed the implicit event loop on the main thread, which
+    # breaks python-telegram-bot's internal asyncio.get_event_loop() call
+    # inside run_polling(). Create and set one explicitly before that runs.
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
     start_health_server()
     app = Application.builder().token(BOT_TOKEN).build()
 
