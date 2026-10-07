@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, ChatMemberHandler,
-    CallbackQueryHandler, ContextTypes, filters, ApplicationHandlerStop
+    ChatJoinRequestHandler, CallbackQueryHandler, ContextTypes, filters, ApplicationHandlerStop
 )
 from telegram.constants import MessageEntityType, ChatMemberStatus
 
@@ -34,7 +34,6 @@ PERMANENT_RULES = (
     "❤️ Respect Everyone & Enjoy the Group!"
 )
 
-# Hardcoded styled welcome and goodbye messages
 PERMANENT_WELCOME = (
     "✨ <b>স্বাগতম আমাদের গ্রুপে {name}</b> ✨\n\n"
     "⚠️ <i>চ্যানেল থেকে বের হওয়ার আগে ভেবে বের হবেন!</i>\n"
@@ -52,10 +51,11 @@ DEFAULT_DATA = {
     "warnings": {},          # "chat_id:user_id" -> count
     "banned": {},            # user_id(str) -> {"reason": str, "chat_id": int/str}
     "antilink_enabled": True,
+    "auto_approve_enabled": True,  # Auto join request accept
     "whitelist_links": [],   # domains allowed
     "button_text": "Video Channel",
     "button_url": "",        # empty = button hidden
-    "channels": [],          # Multiple channel IDs/Usernames list
+    "channels": [],          # Multiple channel IDs/Usernames
 }
 
 def load_data():
@@ -102,6 +102,19 @@ async def delete_message_after_delay(chat_id: int, message_id: int, context: Con
         await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
     except Exception as e:
         logger.debug(f"Auto delete message failed or already deleted: {e}")
+
+# ---------- Auto Approve Join Request (Channel & Group) ----------
+async def auto_approve_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not data.get("auto_approve_enabled", True):
+        return
+    request = update.chat_join_request
+    if not request:
+        return
+    try:
+        await request.approve()
+        logger.info(f"Auto approved user {request.from_user.id} in chat {request.chat.title} ({request.chat.id})")
+    except Exception as e:
+        logger.error(f"Failed to auto-approve join request: {e}")
 
 # ---------- Welcome / Goodbye (Group Only + 1 Min Auto-Delete) ----------
 def extra_button_markup():
@@ -268,7 +281,7 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"সমস্যা: {e}")
 
-# ---------- Anti-link / Anti-promo Auto-mod ----------
+# ---------- Anti-link / Anti-promo Auto-mod (Channel Auto Forward Safe) ----------
 LINK_PATTERN = re.compile(
     r"(https?://\S+|www\.\S+|t\.me/\S+|telegram\.me/\S+|\S+\.(com|net|org|io|xyz|info|co|gg|me|app)\b)",
     re.IGNORECASE
@@ -304,16 +317,24 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if not msg or update.effective_chat.type not in ("group", "supergroup"):
         return
+
+    # 1. Linked Channel auto-forward message check (Linked channel theke asha post ignore korbe)
+    if msg.is_automatic_forward or getattr(msg, "sender_chat", None) is not None:
+        return
+
+    # 2. Sender checks
     user = update.effective_user
     if not user or is_admin(user.id) or user.is_bot:
         return
     if await is_group_admin(update, context, user.id):
         return
 
+    # 3. Whitelist check
     text = msg.text or msg.caption or ""
     if _is_whitelisted(text):
         return
 
+    # 4. Check for user-forwarded, link, or promo
     is_forward = bool(msg.forward_origin or getattr(msg, "forward_from_chat", None) or getattr(msg, "forward_from", None))
     has_link = message_has_link(msg)
     is_promo = message_is_promo(msg)
@@ -338,20 +359,17 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await issue_warning(update, context, user, reason)
     raise ApplicationHandlerStop
 
-# ---------- Multi-Channel Post System (Post + Caption + Button) ----------
+# ---------- Multi-Channel Post System ----------
 def _post_draft(context: ContextTypes.DEFAULT_TYPE, user_id: int):
     drafts = context.bot_data.setdefault("post_draft", {})
     return drafts.get(user_id)
 
 def post_editor_markup(draft):
     rows = []
-    # Buttons list
     for i, btn in enumerate(draft["buttons"]):
         rows.append([InlineKeyboardButton(f"❌ বাটন মুছুন: {btn['text']}", callback_data=f"post_rm_{i}")])
     
-    # Caption button
     rows.append([InlineKeyboardButton("✏️ ক্যাপশন যোগ/পরিবর্তন করুন", callback_data="post_set_caption")])
-    
     if len(draft["buttons"]) < 4:
         rows.append([InlineKeyboardButton("➕ বাটন যোগ করুন", callback_data="post_add_btn")])
     rows.append([InlineKeyboardButton("✅ সব চ্যানেলে পোস্ট করুন", callback_data="post_publish")])
@@ -423,34 +441,45 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- Admin Panel & Menus ----------
 def admin_panel_markup():
     channel_count = len(data.get("channels", []))
+    auto_appr = "ON ✅" if data.get("auto_approve_enabled", True) else "OFF ❌"
+    antilink = "ON ✅" if data.get("antilink_enabled", True) else "OFF ❌"
     kb = [
         [InlineKeyboardButton("🚫 ব্যান লিস্ট দেখুন", callback_data="view_banned")],
         [InlineKeyboardButton("⚠️ ওয়ার্নিং লিস্ট দেখুন", callback_data="view_warnings")],
-        [InlineKeyboardButton(
-            "🔗 লিংক/প্রোমো অটো-ওয়ার্ন: " + ("ON ✅" if data.get("antilink_enabled", True) else "OFF ❌"),
-            callback_data="toggle_antilink"
-        )],
+        [InlineKeyboardButton(f"🔗 অটো-ওয়ার্ন (লিংক): {antilink}", callback_data="toggle_antilink")],
+        [InlineKeyboardButton(f"⚡ অটো জয়েন এপ্রুভ: {auto_appr}", callback_data="toggle_auto_approve")],
         [InlineKeyboardButton("🔘 Welcome/Goodbye বাটন সেট", callback_data="set_button")],
         [InlineKeyboardButton(f"🎯 চ্যানেল ম্যানেজ করুন ({channel_count} টি)", callback_data="manage_channels")],
         [InlineKeyboardButton("📢 চ্যানেলে নতুন পোস্ট বানান", callback_data="new_post")],
     ]
     return InlineKeyboardMarkup(kb)
 
-def get_channels_markup():
+async def get_channels_status_markup(context: ContextTypes.DEFAULT_TYPE):
+    """লিস্টের চ্যানেলগুলোতে বট অ্যাডমিন আছে কিনা স্ট্যাটাস চেক করে দেখায়"""
     channels = data.get("channels", [])
     kb = []
+    lines = ["🎯 <b>টার্গেট চ্যানেল লিস্ট ও স্ট্যাটাস:</b>\n"]
+
     if channels:
         for idx, ch in enumerate(channels):
+            chat_target = format_target_chat(ch)
+            admin_status = "❌ Admin নেই / Not Found"
+            try:
+                me = await context.bot.get_chat_member(chat_target, context.bot.id)
+                if me.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
+                    admin_status = "✅ Admin সক্রিয়"
+            except Exception:
+                admin_status = "❌ Error (চেক করুন বট চ্যানেলে আছে কিনা)"
+
+            lines.append(f"{idx+1}. <code>{ch}</code> ➔ <b>{admin_status}</b>")
             kb.append([InlineKeyboardButton(f"❌ সরান: {ch}", callback_data=f"rm_channel_{idx}")])
+    else:
+        lines.append("কোনো চ্যানেল যোগ করা নেই।")
+
+    lines.append("\n⚠️ চ্যানেলগুলোতে বটকে 'Post Messages' এবং 'Invite Users via Link' পারমিশন দিন।")
     kb.append([InlineKeyboardButton("➕ নতুন চ্যানেল যোগ করুন", callback_data="add_channel")])
     kb.append([InlineKeyboardButton("🔙 ফিরে যান", callback_data="back_to_panel")])
-    
-    text = (
-        "🎯 <b>টার্গেট চ্যানেল লিস্ট:</b>\n\n"
-        + ("\n".join(f"{i+1}. <code>{ch}</code>" for i, ch in enumerate(channels)) if channels else "কোনো চ্যানেল যোগ করা নেই।")
-        + "\n\n⚠️ বটকে অবশ্যই প্রতিটা চ্যানেলে Administrator (Post messages পারমিশন সহ) বানাতে হবে।"
-    )
-    return text, InlineKeyboardMarkup(kb)
+    return "\n".join(lines), InlineKeyboardMarkup(kb)
 
 def get_banned_list_markup():
     banned_items = data.get("banned", {})
@@ -562,7 +591,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "back_to_panel":
         await query.edit_message_text("🛠 অ্যাডমিন প্যানেল", reply_markup=admin_panel_markup())
     elif action == "manage_channels":
-        text, markup = get_channels_markup()
+        text, markup = await get_channels_status_markup(context)
         await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
     elif action == "add_channel":
         context.user_data["awaiting"] = "add_channel"
@@ -578,7 +607,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             removed = channels.pop(idx)
             save_data(data)
             await query.answer(f"❌ চ্যানেল {removed} সরানো হয়েছে!", show_alert=True)
-        text, markup = get_channels_markup()
+        text, markup = await get_channels_status_markup(context)
         await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
     elif action == "view_banned":
         text, markup = get_banned_list_markup()
@@ -608,6 +637,12 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "toggle_antilink":
         data["antilink_enabled"] = not data.get("antilink_enabled", True)
         save_data(data)
+        await query.edit_message_text("🛠 অ্যাডমিন প্যানেল", reply_markup=admin_panel_markup())
+    elif action == "toggle_auto_approve":
+        data["auto_approve_enabled"] = not data.get("auto_approve_enabled", True)
+        save_data(data)
+        status_txt = "চালু" if data["auto_approve_enabled"] else "বন্ধ"
+        await query.answer(f"⚡ অটো এপ্রুভ {status_txt} করা হয়েছে!", show_alert=True)
         await query.edit_message_text("🛠 অ্যাডমিন প্যানেল", reply_markup=admin_panel_markup())
     elif action == "set_button":
         context.user_data["awaiting"] = "button"
@@ -771,6 +806,9 @@ def main():
     app.add_handler(CommandHandler("post", post_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
 
+    # Auto Approve Member Join Requests (Channel & Group)
+    app.add_handler(ChatJoinRequestHandler(auto_approve_request))
+
     # Real-time Chat Member Status Updates
     app.add_handler(ChatMemberHandler(chat_member_update, ChatMemberHandler.CHAT_MEMBER))
 
@@ -796,6 +834,7 @@ def main():
     ))
 
     logger.info("Bot starting...")
+    # Update.ALL_TYPES ensures chat_join_request is captured
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
