@@ -34,9 +34,21 @@ PERMANENT_RULES = (
     "❤️ Respect Everyone & Enjoy the Group!"
 )
 
+# Hardcoded styled welcome and goodbye messages
+PERMANENT_WELCOME = (
+    "✨ <b>স্বাগতম আমাদের গ্রুপে {name}</b> ✨\n\n"
+    "⚠️ <i>চ্যানেল থেকে বের হওয়ার আগে ভেবে বের হবেন!</i>\n"
+    "💎 কারণ <b>প্রিমিয়াম ভিডিও ফ্রিতে</b> দেয়া হয় এই চ্যানেলে।\n\n"
+    "👉 তাই যাদের ফ্রিতে দরকার নাই তারা বের হয়ে যান, এটা সম্পূর্ণ আপনার ইচ্ছা! 🚀"
+)
+
+PERMANENT_GOODBYE = (
+    "👋 <b>{name}</b>\n\n"
+    "💰 <i>সে টাকা দিয়ে গ্রুপ কিনছে,</i>\n"
+    "🔥 তাই তাকে এই গ্রুপ থেকে বের করে <b>প্রিমিয়াম গ্রুপে যুক্ত করা হয়েছে!</b> 👑"
+)
+
 DEFAULT_DATA = {
-    "welcome": "ওয়েলকাম {name}! গ্রুপে স্বাগতম 🎉",
-    "goodbye": "{name} গ্রুপ থেকে চলে গেলেন। বিদায় 👋",
     "warnings": {},          # "chat_id:user_id" -> count
     "banned": {},            # user_id(str) -> {"reason": str, "chat_id": int/str}
     "antilink_enabled": True,
@@ -52,7 +64,6 @@ def load_data():
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 saved = json.load(f)
-            # Migration from single channel_id to channels list
             if "channel_id" in saved and saved["channel_id"]:
                 merged["channels"] = [saved["channel_id"]]
             merged.update(saved)
@@ -92,7 +103,7 @@ async def delete_message_after_delay(chat_id: int, message_id: int, context: Con
     except Exception as e:
         logger.debug(f"Auto delete message failed or already deleted: {e}")
 
-# ---------- Welcome / Goodbye (Groups Only + 1-Min Auto-Delete) ----------
+# ---------- Welcome / Goodbye (Group Only + 1 Min Auto-Delete) ----------
 def extra_button_markup():
     url = data.get("button_url", "").strip()
     if not url:
@@ -125,10 +136,7 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 pass
             return
         
-        text = data.get("welcome", DEFAULT_DATA["welcome"]).format(
-            name=user.mention_html(), 
-            group=chat.title or "গ্রুপ"
-        )
+        text = PERMANENT_WELCOME.format(name=user.mention_html())
         try:
             sent_msg = await context.bot.send_message(
                 chat_id=chat.id,
@@ -142,14 +150,12 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # User Left
     elif old_status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.RESTRICTED) and new_status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED):
-        text = data.get("goodbye", DEFAULT_DATA["goodbye"]).format(
-            name=user.full_name or "মেম্বার", 
-            group=chat.title or "গ্রুপ"
-        )
+        text = PERMANENT_GOODBYE.format(name=user.full_name or "মেম্বার")
         try:
             sent_msg = await context.bot.send_message(
                 chat_id=chat.id,
                 text=text,
+                parse_mode="HTML",
                 reply_markup=extra_button_markup()
             )
             asyncio.create_task(delete_message_after_delay(chat.id, sent_msg.message_id, context, 60))
@@ -171,10 +177,7 @@ async def greet_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
             continue
-        text = data.get("welcome", DEFAULT_DATA["welcome"]).format(
-            name=member.mention_html(), 
-            group=chat.title or "গ্রুপ"
-        )
+        text = PERMANENT_WELCOME.format(name=member.mention_html())
         sent_msg = await update.message.reply_html(text, reply_markup=extra_button_markup())
         asyncio.create_task(delete_message_after_delay(chat.id, sent_msg.message_id, context, 60))
 
@@ -187,11 +190,8 @@ async def farewell_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     member = update.message.left_chat_member
     if member.is_bot:
         return
-    text = data.get("goodbye", DEFAULT_DATA["goodbye"]).format(
-        name=member.full_name or "মেম্বার", 
-        group=chat.title or "গ্রুপ"
-    )
-    sent_msg = await update.message.reply_text(text, reply_markup=extra_button_markup())
+    text = PERMANENT_GOODBYE.format(name=member.full_name or "মেম্বার")
+    sent_msg = await update.message.reply_html(text, reply_markup=extra_button_markup())
     asyncio.create_task(delete_message_after_delay(chat.id, sent_msg.message_id, context, 60))
 
 # ---------- Warning / Ban ----------
@@ -338,15 +338,20 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await issue_warning(update, context, user, reason)
     raise ApplicationHandlerStop
 
-# ---------- Multi-Channel Post System ----------
+# ---------- Multi-Channel Post System (Post + Caption + Button) ----------
 def _post_draft(context: ContextTypes.DEFAULT_TYPE, user_id: int):
     drafts = context.bot_data.setdefault("post_draft", {})
     return drafts.get(user_id)
 
 def post_editor_markup(draft):
     rows = []
+    # Buttons list
     for i, btn in enumerate(draft["buttons"]):
-        rows.append([InlineKeyboardButton(f"❌ {btn['text']}", callback_data=f"post_rm_{i}")])
+        rows.append([InlineKeyboardButton(f"❌ বাটন মুছুন: {btn['text']}", callback_data=f"post_rm_{i}")])
+    
+    # Caption button
+    rows.append([InlineKeyboardButton("✏️ ক্যাপশন যোগ/পরিবর্তন করুন", callback_data="post_set_caption")])
+    
     if len(draft["buttons"]) < 4:
         rows.append([InlineKeyboardButton("➕ বাটন যোগ করুন", callback_data="post_add_btn")])
     rows.append([InlineKeyboardButton("✅ সব চ্যানেলে পোস্ট করুন", callback_data="post_publish")])
@@ -356,16 +361,16 @@ def post_editor_markup(draft):
 def post_preview_text(draft):
     channels_count = len(data.get("channels", []))
     lines = [
-        "📋 পোস্ট প্রিভিউ",
-        f"🎯 টার্গেট চ্যানেল সংখ্যা: {channels_count} টি",
-        f"ক্যাপশন: {draft['caption'] or '(খালি)'}"
+        "📋 <b>পোস্ট প্রিভিউ</b>",
+        f"🎯 টার্গেট চ্যানেল সংখ্যা: <b>{channels_count} টি</b>",
+        f"📝 <b>ক্যাপশন:</b> {draft['caption'] or '(কোনো ক্যাপশন নেই)'}\n"
     ]
     if draft["buttons"]:
-        lines.append("বাটন:")
+        lines.append("🔘 <b>যুক্ত করা বাটন:</b>")
         for b in draft["buttons"]:
-            lines.append(f"  • {b['text']} → {b['url']}")
+            lines.append(f"  • {b['text']} ➔ {b['url']}")
     else:
-        lines.append("বাটন: এখনো যোগ করা হয়নি")
+        lines.append("🔘 <b>যুক্ত করা বাটন:</b> এখনো কোনো বাটন যোগ করা হয়নি")
     return "\n".join(lines)
 
 async def post_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -378,13 +383,14 @@ async def start_post_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not data.get("channels"):
         await update.effective_message.reply_text(
-            "⚠️️ কোনো চ্যানেল যোগ করা নেই!\n/ad প্যানেল থেকে '🎯 চ্যানেল ম্যানেজ করুন' চাপুন এবং চ্যানেল আইডি যোগ করুন।"
+            "⚠️ কোনো চ্যানেল যোগ করা নেই!\n/ad প্যানেল থেকে '🎯 চ্যানেল ম্যানেজ করুন' চাপুন এবং চ্যানেল আইডি যোগ করুন।"
         )
         return
     context.bot_data.setdefault("post_draft", {})[user_id] = None
     context.user_data["awaiting"] = "post_video"
     await update.effective_message.reply_text(
-        "ভিডিও অথবা ছবি পাঠান যেটা সব চ্যানেলে পোস্ট করতে চান (ক্যাপশনসহ পাঠাতে পারেন)।\nবাতিল করতে /cancel লিখুন।"
+        "ভিডিও অথবা ছবি পাঠান যেটা সব চ্যানেলে পোস্ট করতে চান (ক্যাপশনসহ পাঠাতে পারেন, অথবা পরেও ক্যাপশন যোগ করতে পারবেন)।\n"
+        "বাতিল করতে /cancel লিখুন।"
     )
 
 async def post_video_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -403,7 +409,7 @@ async def post_video_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
     draft = {"kind": kind, "file_id": file_id, "caption": msg.caption or "", "buttons": []}
     context.bot_data.setdefault("post_draft", {})[user_id] = draft
     context.user_data["awaiting"] = None
-    await update.message.reply_text(post_preview_text(draft), reply_markup=post_editor_markup(draft))
+    await update.message.reply_html(post_preview_text(draft), reply_markup=post_editor_markup(draft))
     raise ApplicationHandlerStop
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -418,8 +424,6 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def admin_panel_markup():
     channel_count = len(data.get("channels", []))
     kb = [
-        [InlineKeyboardButton("✏️ Welcome মেসেজ সেট", callback_data="set_welcome")],
-        [InlineKeyboardButton("✏️ Goodbye মেসেজ সেট", callback_data="set_goodbye")],
         [InlineKeyboardButton("🚫 ব্যান লিস্ট দেখুন", callback_data="view_banned")],
         [InlineKeyboardButton("⚠️ ওয়ার্নিং লিস্ট দেখুন", callback_data="view_warnings")],
         [InlineKeyboardButton(
@@ -442,8 +446,8 @@ def get_channels_markup():
     kb.append([InlineKeyboardButton("🔙 ফিরে যান", callback_data="back_to_panel")])
     
     text = (
-        "🎯 **টার্গেট চ্যানেল লিস্ট:**\n\n"
-        + ("\n".join(f"{i+1}. `{ch}`" for i, ch in enumerate(channels)) if channels else "কোনো চ্যানেল যোগ করা নেই।")
+        "🎯 <b>টার্গেট চ্যানেল লিস্ট:</b>\n\n"
+        + ("\n".join(f"{i+1}. <code>{ch}</code>" for i, ch in enumerate(channels)) if channels else "কোনো চ্যানেল যোগ করা নেই।")
         + "\n\n⚠️ বটকে অবশ্যই প্রতিটা চ্যানেলে Administrator (Post messages পারমিশন সহ) বানাতে হবে।"
     )
     return text, InlineKeyboardMarkup(kb)
@@ -451,15 +455,15 @@ def get_channels_markup():
 def get_banned_list_markup():
     banned_items = data.get("banned", {})
     if not banned_items:
-        text = "🚫 ব্যান লিস্ট:\nকোনো ব্যান করা ইউজার নেই।"
+        text = "🚫 <b>ব্যান লিস্ট:</b>\nকোনো ব্যান করা ইউজার নেই।"
         kb = [[InlineKeyboardButton("🔙 ফিরে যান", callback_data="back_to_panel")]]
         return text, InlineKeyboardMarkup(kb)
 
-    lines = ["🚫 ব্যান লিস্ট (আনব্যান করতে বাটনে চাপুন):\n"]
+    lines = ["🚫 <b>ব্যান লিস্ট (আনব্যান করতে বাটনে চাপুন):</b>\n"]
     kb = []
     for uid, info in banned_items.items():
         reason = info.get("reason", "unknown") if isinstance(info, dict) else str(info)
-        lines.append(f"• ID: `{uid}`\n  কারণ: {reason}")
+        lines.append(f"• ID: <code>{uid}</code>\n  কারণ: {reason}")
         kb.append([InlineKeyboardButton(f"🔓 Unban {uid}", callback_data=f"unban_user_{uid}")])
 
     kb.append([InlineKeyboardButton("🔙 ফিরে যান", callback_data="back_to_panel")])
@@ -481,8 +485,8 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("অনুমতি নেই।")
         return
 
-    # Post creation flow actions
-    if action in ("new_post", "post_add_btn", "post_cancel", "post_publish") or action.startswith("post_rm_"):
+    # Post flow actions
+    if action in ("new_post", "post_add_btn", "post_set_caption", "post_cancel", "post_publish") or action.startswith("post_rm_"):
         if action == "new_post":
             await start_post_flow(update, context)
             return
@@ -492,19 +496,26 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("পোস্ট খুঁজে পাওয়া যায়নি, আবার /post দিয়ে শুরু করুন।")
             return
 
-        if action == "post_add_btn":
+        if action == "post_set_caption":
+            context.user_data["awaiting"] = "post_caption"
+            await query.edit_message_text(
+                "পোস্টের নতুন ক্যাপশন লিখে পাঠান:\n(ক্যাপশন খালি/মুছে ফেলতে চাইলে <code>clear</code> লিখে পাঠান)",
+                parse_mode="HTML"
+            )
+        elif action == "post_add_btn":
             if len(draft["buttons"]) >= 4:
                 await query.answer("সর্বোচ্চ ৪টা বাটন যোগ করা যাবে।", show_alert=True)
                 return
             context.user_data["awaiting"] = "post_button"
             await query.edit_message_text(
-                post_preview_text(draft) + "\n\nনতুন বাটন এই ফরম্যাটে পাঠান:\nবাটন নাম | লিংক\n\nউদাহরণ:\nWatch Now | https://t.me/yourchannel"
+                post_preview_text(draft) + "\n\nনতুন বাটন এই ফরম্যাটে পাঠান:\nবাটন নাম | লিংক\n\nউদাহরণ:\nWatch Now | https://t.me/yourchannel",
+                parse_mode="HTML"
             )
         elif action.startswith("post_rm_"):
             idx = int(action.replace("post_rm_", ""))
             if 0 <= idx < len(draft["buttons"]):
                 draft["buttons"].pop(idx)
-            await query.edit_message_text(post_preview_text(draft), reply_markup=post_editor_markup(draft))
+            await query.edit_message_text(post_preview_text(draft), reply_markup=post_editor_markup(draft), parse_mode="HTML")
         elif action == "post_cancel":
             context.bot_data.setdefault("post_draft", {})[user_id] = None
             context.user_data["awaiting"] = None
@@ -552,12 +563,13 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🛠 অ্যাডমিন প্যানেল", reply_markup=admin_panel_markup())
     elif action == "manage_channels":
         text, markup = get_channels_markup()
-        await query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+        await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
     elif action == "add_channel":
         context.user_data["awaiting"] = "add_channel"
         await query.edit_message_text(
             "চ্যানেলের আইডি বা ইউজারনেম পাঠান (প্রাইভেট চ্যানেল হলে -100 দিয়ে শুরু আইডি দিন):\n\n"
-            "উদাহরণ: `-1002345678901` অথবা `@mychannel`"
+            "উদাহরণ: <code>-1002345678901</code> অথবা <code>@mychannel</code>",
+            parse_mode="HTML"
         )
     elif action.startswith("rm_channel_"):
         idx = int(action.replace("rm_channel_", ""))
@@ -567,10 +579,10 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             save_data(data)
             await query.answer(f"❌ চ্যানেল {removed} সরানো হয়েছে!", show_alert=True)
         text, markup = get_channels_markup()
-        await query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+        await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
     elif action == "view_banned":
         text, markup = get_banned_list_markup()
-        await query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
+        await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
     elif action.startswith("unban_user_"):
         target_uid = action.replace("unban_user_", "")
         ban_info = data.get("banned", {}).get(target_uid)
@@ -586,17 +598,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer(f"✅ ইউজার {target_uid} কে আনব্যান করা হয়েছে!", show_alert=True)
         
         text, markup = get_banned_list_markup()
-        await query.edit_message_text(text, reply_markup=markup, parse_mode="Markdown")
-    elif action == "set_welcome":
-        context.user_data["awaiting"] = "welcome"
-        await query.edit_message_text(
-            "নতুন Welcome মেসেজ পাঠান। {name} আর {group} ব্যবহার করতে পারবেন।\n\nবর্তমান:\n" + data["welcome"]
-        )
-    elif action == "set_goodbye":
-        context.user_data["awaiting"] = "goodbye"
-        await query.edit_message_text(
-            "নতুন Goodbye মেসেজ পাঠান। {name} আর {group} ব্যবহার করতে পারবেন।\n\nবর্তমান:\n" + data["goodbye"]
-        )
+        await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
     elif action == "view_warnings":
         if not data["warnings"]:
             txt = "কোনো ওয়ার্নিং নেই।"
@@ -625,7 +627,26 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not awaiting or not is_admin(user_id):
         return
 
-    if awaiting == "post_button":
+    # Post Caption Set
+    if awaiting == "post_caption":
+        draft = _post_draft(context, user_id)
+        if not draft:
+            await update.message.reply_text("পোস্ট খুঁজে পাওয়া যায়নি, আবার /post দিয়ে শুরু করুন।")
+            context.user_data["awaiting"] = None
+            raise ApplicationHandlerStop
+        raw = update.message.text.strip()
+        if raw.lower() == "clear":
+            draft["caption"] = ""
+            await update.message.reply_text("✅ ক্যাপশন মুছে ফেলা হয়েছে।")
+        else:
+            draft["caption"] = update.message.text
+            await update.message.reply_text("✅ ক্যাপশন সেট করা হয়েছে।")
+        await update.message.reply_html(post_preview_text(draft), reply_markup=post_editor_markup(draft))
+        context.user_data["awaiting"] = None
+        raise ApplicationHandlerStop
+
+    # Post Button Set
+    elif awaiting == "post_button":
         draft = _post_draft(context, user_id)
         if not draft:
             await update.message.reply_text("পোস্ট খুঁজে পাওয়া যায়নি, আবার /post দিয়ে শুরু করুন।")
@@ -648,10 +669,11 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("সর্বোচ্চ ৪টা বাটন যোগ করা যাবে।")
         else:
             draft["buttons"].append({"text": btn_text or "Button", "url": btn_url})
-        await update.message.reply_text(post_preview_text(draft), reply_markup=post_editor_markup(draft))
+        await update.message.reply_html(post_preview_text(draft), reply_markup=post_editor_markup(draft))
         context.user_data["awaiting"] = None
         raise ApplicationHandlerStop
 
+    # Channel add
     elif awaiting == "add_channel":
         raw = update.message.text.strip()
         if raw.isdigit():
@@ -662,16 +684,9 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
         else:
             channels.append(raw)
             save_data(data)
-            await update.message.reply_text(f"✅ নতুন চ্যানেল যোগ হয়েছে: `{raw}`", parse_mode="Markdown")
+            await update.message.reply_html(f"✅ নতুন চ্যানেল যোগ হয়েছে: <code>{raw}</code>")
 
-    elif awaiting == "welcome":
-        data["welcome"] = update.message.text
-        save_data(data)
-        await update.message.reply_text("✅ Welcome মেসেজ সেট হয়েছে।")
-    elif awaiting == "goodbye":
-        data["goodbye"] = update.message.text
-        save_data(data)
-        await update.message.reply_text("✅ Goodbye মেসেজ সেট হয়েছে।")
+    # Extra Button Set for welcome/goodbye
     elif awaiting == "button":
         raw = update.message.text.strip()
         if raw.lower() == "off":
