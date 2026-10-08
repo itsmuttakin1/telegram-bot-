@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import asyncio
 import logging
 import threading
@@ -16,8 +17,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-
-# Dui jon admin access pabe
 ADMIN_IDS = {5140546628, 7728010216}
 
 DATA_FILE = "data.json"
@@ -47,15 +46,22 @@ PERMANENT_GOODBYE = (
     "🔥 তাই তাকে এই গ্রুপ থেকে বের করে <b>প্রিমিয়াম গ্রুপে যুক্ত করা হয়েছে!</b> 👑"
 )
 
+# Shob post-e default bhabe ei button thakbe
+DEFAULT_PERMANENT_BUTTON = {
+    "text": "পাবলিক গ্রুপ",
+    "url": "https://t.me/+f0vawMiFO75mNDM1"
+}
+
 DEFAULT_DATA = {
     "warnings": {},          # "chat_id:user_id" -> count
     "banned": {},            # user_id(str) -> {"reason": str, "chat_id": int/str}
     "antilink_enabled": True,
-    "auto_approve_enabled": True,  # Auto join request accept
-    "whitelist_links": [],   # domains allowed
+    "auto_approve_enabled": True,
+    "whitelist_links": [],
     "button_text": "Video Channel",
-    "button_url": "",        # empty = button hidden
-    "channels": [],          # Multiple channel IDs/Usernames
+    "button_url": "",        
+    "channels": [],          
+    "saved_caption": "",     # Reusable post caption
 }
 
 def load_data():
@@ -79,7 +85,9 @@ def save_data(data_obj):
 
 data = load_data()
 
-# ---------- Helper Functions ----------
+# Duplicate greet prevention cache: (chat_id, user_id, event_type) -> timestamp
+recent_greets = {}
+
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
@@ -101,9 +109,9 @@ async def delete_message_after_delay(chat_id: int, message_id: int, context: Con
         await asyncio.sleep(delay_seconds)
         await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
     except Exception as e:
-        logger.debug(f"Auto delete message failed or already deleted: {e}")
+        logger.debug(f"Auto delete message failed: {e}")
 
-# ---------- Auto Approve Join Request (Channel & Group) ----------
+# ---------- Auto Approve Join Request ----------
 async def auto_approve_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not data.get("auto_approve_enabled", True):
         return
@@ -112,11 +120,11 @@ async def auto_approve_request(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     try:
         await request.approve()
-        logger.info(f"Auto approved user {request.from_user.id} in chat {request.chat.title} ({request.chat.id})")
+        logger.info(f"Auto approved user {request.from_user.id} in chat {request.chat.id}")
     except Exception as e:
-        logger.error(f"Failed to auto-approve join request: {e}")
+        logger.error(f"Failed to auto-approve: {e}")
 
-# ---------- Welcome / Goodbye (Group Only + 1 Min Auto-Delete) ----------
+# ---------- Welcome / Goodbye (Duplicate Protected + Auto-Delete) ----------
 def extra_button_markup():
     url = data.get("button_url", "").strip()
     if not url:
@@ -139,9 +147,16 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     old_status = result.old_chat_member.status
     new_status = result.new_chat_member.status
+    now = time.time()
 
     # User Joined
     if old_status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED) and new_status in (ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED):
+        # 10s duplicate protection
+        key = (chat.id, user.id, "welcome")
+        if now - recent_greets.get(key, 0) < 10:
+            return
+        recent_greets[key] = now
+
         if str(user.id) in data["banned"]:
             try:
                 await context.bot.ban_chat_member(chat.id, user.id)
@@ -163,6 +178,11 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # User Left
     elif old_status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.RESTRICTED) and new_status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED):
+        key = (chat.id, user.id, "goodbye")
+        if now - recent_greets.get(key, 0) < 10:
+            return
+        recent_greets[key] = now
+
         text = PERMANENT_GOODBYE.format(name=user.full_name or "মেম্বার")
         try:
             sent_msg = await context.bot.send_message(
@@ -174,38 +194,6 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
             asyncio.create_task(delete_message_after_delay(chat.id, sent_msg.message_id, context, 60))
         except Exception as e:
             logger.error(f"Goodbye message error in {chat.id}: {e}")
-
-async def greet_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    if not chat or chat.type not in ("group", "supergroup"):
-        return
-    if not update.message or not update.message.new_chat_members:
-        return
-    for member in update.message.new_chat_members:
-        if member.is_bot:
-            continue
-        if str(member.id) in data["banned"]:
-            try:
-                await context.bot.ban_chat_member(chat.id, member.id)
-            except Exception:
-                pass
-            continue
-        text = PERMANENT_WELCOME.format(name=member.mention_html())
-        sent_msg = await update.message.reply_html(text, reply_markup=extra_button_markup())
-        asyncio.create_task(delete_message_after_delay(chat.id, sent_msg.message_id, context, 60))
-
-async def farewell_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    if not chat or chat.type not in ("group", "supergroup"):
-        return
-    if not update.message or not update.message.left_chat_member:
-        return
-    member = update.message.left_chat_member
-    if member.is_bot:
-        return
-    text = PERMANENT_GOODBYE.format(name=member.full_name or "মেম্বার")
-    sent_msg = await update.message.reply_html(text, reply_markup=extra_button_markup())
-    asyncio.create_task(delete_message_after_delay(chat.id, sent_msg.message_id, context, 60))
 
 # ---------- Warning / Ban ----------
 async def issue_warning(update: Update, context: ContextTypes.DEFAULT_TYPE, target, reason: str):
@@ -281,7 +269,7 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"সমস্যা: {e}")
 
-# ---------- Anti-link / Anti-promo Auto-mod (Channel Auto Forward Safe) ----------
+# ---------- Anti-link / Anti-promo / Inbox Filter Auto-mod ----------
 LINK_PATTERN = re.compile(
     r"(https?://\S+|www\.\S+|t\.me/\S+|telegram\.me/\S+|\S+\.(com|net|org|io|xyz|info|co|gg|me|app)\b)",
     re.IGNORECASE
@@ -292,6 +280,12 @@ PROMO_KEYWORDS = [
     "চ্যানেলে জয়েন", "জয়েন করুন", "ফ্রি টাকা", "ইনকাম করুন", "প্রমো কোড",
     "লিংকে ক্লিক", "সাবস্ক্রাইব",
 ]
+
+# Inbox / DM keywords - just silent delete
+INBOX_KEYWORDS_PATTERN = re.compile(
+    r"\b(inbox|dm|ib|pm|ইনবক্স|ইনবক্সে|ইনবক্স করো|ইনবক্স করুন|dm me|inbox me)\b",
+    re.IGNORECASE
+)
 
 def _is_whitelisted(text: str) -> bool:
     wl = data.get("whitelist_links", [])
@@ -318,23 +312,29 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg or update.effective_chat.type not in ("group", "supergroup"):
         return
 
-    # 1. Linked Channel auto-forward message check (Linked channel theke asha post ignore korbe)
+    # Channel auto-forward ignore
     if msg.is_automatic_forward or getattr(msg, "sender_chat", None) is not None:
         return
 
-    # 2. Sender checks
     user = update.effective_user
     if not user or is_admin(user.id) or user.is_bot:
         return
     if await is_group_admin(update, context, user.id):
         return
 
-    # 3. Whitelist check
     text = msg.text or msg.caption or ""
+
+    # 1. Inbox / DM word detect -> Just delete message without warning
+    if INBOX_KEYWORDS_PATTERN.search(text):
+        try:
+            await msg.delete()
+        except Exception as e:
+            logger.warning(f"Inbox delete failed: {e}")
+        raise ApplicationHandlerStop
+
     if _is_whitelisted(text):
         return
 
-    # 4. Check for user-forwarded, link, or promo
     is_forward = bool(msg.forward_origin or getattr(msg, "forward_from_chat", None) or getattr(msg, "forward_from", None))
     has_link = message_has_link(msg)
     is_promo = message_is_promo(msg)
@@ -354,7 +354,7 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await msg.delete()
     except Exception as e:
-        logger.warning(f"delete failed: {e}")
+        logger.warning(f"Delete failed: {e}")
 
     await issue_warning(update, context, user, reason)
     raise ApplicationHandlerStop
@@ -367,11 +367,15 @@ def _post_draft(context: ContextTypes.DEFAULT_TYPE, user_id: int):
 def post_editor_markup(draft):
     rows = []
     for i, btn in enumerate(draft["buttons"]):
-        rows.append([InlineKeyboardButton(f"❌ বাটন মুছুন: {btn['text']}", callback_data=f"post_rm_{i}")])
+        # Permanent button deletion disallowed
+        if i == 0 and btn.get("url") == DEFAULT_PERMANENT_BUTTON["url"]:
+            rows.append([InlineKeyboardButton(f"🔒 {btn['text']} (স্থায়ী)", callback_data="perm_btn_info")])
+        else:
+            rows.append([InlineKeyboardButton(f"❌ বাটন মুছুন: {btn['text']}", callback_data=f"post_rm_{i}")])
     
-    rows.append([InlineKeyboardButton("✏️ ক্যাপশন যোগ/পরিবর্তন করুন", callback_data="post_set_caption")])
-    if len(draft["buttons"]) < 4:
-        rows.append([InlineKeyboardButton("➕ বাটন যোগ করুন", callback_data="post_add_btn")])
+    rows.append([InlineKeyboardButton("✏️ ক্যাপশন পরিবর্তন", callback_data="post_set_caption")])
+    if len(draft["buttons"]) < 5:
+        rows.append([InlineKeyboardButton("➕ আরও বাটন যোগ করুন", callback_data="post_add_btn")])
     rows.append([InlineKeyboardButton("✅ সব চ্যানেলে পোস্ট করুন", callback_data="post_publish")])
     rows.append([InlineKeyboardButton("❌ বাতিল করুন", callback_data="post_cancel")])
     return InlineKeyboardMarkup(rows)
@@ -387,8 +391,6 @@ def post_preview_text(draft):
         lines.append("🔘 <b>যুক্ত করা বাটন:</b>")
         for b in draft["buttons"]:
             lines.append(f"  • {b['text']} ➔ {b['url']}")
-    else:
-        lines.append("🔘 <b>যুক্ত করা বাটন:</b> এখনো কোনো বাটন যোগ করা হয়নি")
     return "\n".join(lines)
 
 async def post_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -407,7 +409,7 @@ async def start_post_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data.setdefault("post_draft", {})[user_id] = None
     context.user_data["awaiting"] = "post_video"
     await update.effective_message.reply_text(
-        "ভিডিও অথবা ছবি পাঠান যেটা সব চ্যানেলে পোস্ট করতে চান (ক্যাপশনসহ পাঠাতে পারেন, অথবা পরেও ক্যাপশন যোগ করতে পারবেন)।\n"
+        "ভিডিও অথবা ছবি পাঠান যেটা চ্যানেলে পোস্ট করতে চান।\n"
         "বাতিল করতে /cancel লিখুন।"
     )
 
@@ -424,7 +426,17 @@ async def post_video_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
         kind, file_id = "photo", msg.photo[-1].file_id
     else:
         return
-    draft = {"kind": kind, "file_id": file_id, "caption": msg.caption or "", "buttons": []}
+
+    # Use msg caption if present, otherwise use saved caption
+    final_caption = msg.caption or data.get("saved_caption", "")
+    
+    # Always include permanent button as first button
+    draft = {
+        "kind": kind,
+        "file_id": file_id,
+        "caption": final_caption,
+        "buttons": [dict(DEFAULT_PERMANENT_BUTTON)]
+    }
     context.bot_data.setdefault("post_draft", {})[user_id] = draft
     context.user_data["awaiting"] = None
     await update.message.reply_html(post_preview_text(draft), reply_markup=post_editor_markup(draft))
@@ -443,11 +455,14 @@ def admin_panel_markup():
     channel_count = len(data.get("channels", []))
     auto_appr = "ON ✅" if data.get("auto_approve_enabled", True) else "OFF ❌"
     antilink = "ON ✅" if data.get("antilink_enabled", True) else "OFF ❌"
+    caption_status = "সেট আছে ✅" if data.get("saved_caption") else "খালি ❌"
+
     kb = [
         [InlineKeyboardButton("🚫 ব্যান লিস্ট দেখুন", callback_data="view_banned")],
         [InlineKeyboardButton("⚠️ ওয়ার্নিং লিস্ট দেখুন", callback_data="view_warnings")],
         [InlineKeyboardButton(f"🔗 অটো-ওয়ার্ন (লিংক): {antilink}", callback_data="toggle_antilink")],
         [InlineKeyboardButton(f"⚡ অটো জয়েন এপ্রুভ: {auto_appr}", callback_data="toggle_auto_approve")],
+        [InlineKeyboardButton(f"💾 পোস্ট ক্যাপশন সেট ({caption_status})", callback_data="manage_saved_caption")],
         [InlineKeyboardButton("🔘 Welcome/Goodbye বাটন সেট", callback_data="set_button")],
         [InlineKeyboardButton(f"🎯 চ্যানেল ম্যানেজ করুন ({channel_count} টি)", callback_data="manage_channels")],
         [InlineKeyboardButton("📢 চ্যানেলে নতুন পোস্ট বানান", callback_data="new_post")],
@@ -455,7 +470,6 @@ def admin_panel_markup():
     return InlineKeyboardMarkup(kb)
 
 async def get_channels_status_markup(context: ContextTypes.DEFAULT_TYPE):
-    """লিস্টের চ্যানেলগুলোতে বট অ্যাডমিন আছে কিনা স্ট্যাটাস চেক করে দেখায়"""
     channels = data.get("channels", [])
     kb = []
     lines = ["🎯 <b>টার্গেট চ্যানেল লিস্ট ও স্ট্যাটাস:</b>\n"]
@@ -469,14 +483,13 @@ async def get_channels_status_markup(context: ContextTypes.DEFAULT_TYPE):
                 if me.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
                     admin_status = "✅ Admin সক্রিয়"
             except Exception:
-                admin_status = "❌ Error (চেক করুন বট চ্যানেলে আছে কিনা)"
+                admin_status = "❌ Error"
 
             lines.append(f"{idx+1}. <code>{ch}</code> ➔ <b>{admin_status}</b>")
             kb.append([InlineKeyboardButton(f"❌ সরান: {ch}", callback_data=f"rm_channel_{idx}")])
     else:
         lines.append("কোনো চ্যানেল যোগ করা নেই।")
 
-    lines.append("\n⚠️ চ্যানেলগুলোতে বটকে 'Post Messages' এবং 'Invite Users via Link' পারমিশন দিন।")
     kb.append([InlineKeyboardButton("➕ নতুন চ্যানেল যোগ করুন", callback_data="add_channel")])
     kb.append([InlineKeyboardButton("🔙 ফিরে যান", callback_data="back_to_panel")])
     return "\n".join(lines), InlineKeyboardMarkup(kb)
@@ -515,7 +528,11 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Post flow actions
-    if action in ("new_post", "post_add_btn", "post_set_caption", "post_cancel", "post_publish") or action.startswith("post_rm_"):
+    if action in ("new_post", "post_add_btn", "post_set_caption", "post_cancel", "post_publish") or action.startswith("post_rm_") or action == "perm_btn_info":
+        if action == "perm_btn_info":
+            await query.answer("এই বাটনটি ডিফল্ট স্থায়ী বাটন, সরানো যাবে না।", show_alert=True)
+            return
+
         if action == "new_post":
             await start_post_flow(update, context)
             return
@@ -528,12 +545,12 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if action == "post_set_caption":
             context.user_data["awaiting"] = "post_caption"
             await query.edit_message_text(
-                "পোস্টের নতুন ক্যাপশন লিখে পাঠান:\n(ক্যাপশন খালি/মুছে ফেলতে চাইলে <code>clear</code> লিখে পাঠান)",
+                "পোস্টের ক্যাপশন লিখে পাঠান:\n(ক্যাপশন খালি করতে চাইলে <code>clear</code> লিখে পাঠান)",
                 parse_mode="HTML"
             )
         elif action == "post_add_btn":
-            if len(draft["buttons"]) >= 4:
-                await query.answer("সর্বোচ্চ ৪টা বাটন যোগ করা যাবে।", show_alert=True)
+            if len(draft["buttons"]) >= 5:
+                await query.answer("সর্বোচ্চ ৫টা বাটন যোগ করা যাবে।", show_alert=True)
                 return
             context.user_data["awaiting"] = "post_button"
             await query.edit_message_text(
@@ -542,7 +559,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         elif action.startswith("post_rm_"):
             idx = int(action.replace("post_rm_", ""))
-            if 0 <= idx < len(draft["buttons"]):
+            if 0 < idx < len(draft["buttons"]):
                 draft["buttons"].pop(idx)
             await query.edit_message_text(post_preview_text(draft), reply_markup=post_editor_markup(draft), parse_mode="HTML")
         elif action == "post_cancel":
@@ -580,24 +597,39 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     fail_count += 1
 
             context.bot_data.setdefault("post_draft", {})[user_id] = None
+            
+            # Post success er por direct arekta post korar button
+            again_markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📢 আরেকটি পোস্ট করুন", callback_data="new_post")],
+                [InlineKeyboardButton("🛠 অ্যাডমিন প্যানেল", callback_data="back_to_panel")]
+            ])
             await query.edit_message_text(
                 f"✅ পোস্ট প্রক্রিয়া সম্পন্ন!\n\n"
                 f"সফল হয়েছে: {success_count} টি চ্যানেলে\n"
-                f"ব্যর্থ হয়েছে: {fail_count} টি চ্যানেলে"
+                f"ব্যর্থ হয়েছে: {fail_count} টি চ্যানেলে",
+                reply_markup=again_markup
             )
         return
 
     # Panel Navigation & Settings
     if action == "back_to_panel":
         await query.edit_message_text("🛠 অ্যাডমিন প্যানেল", reply_markup=admin_panel_markup())
+    elif action == "manage_saved_caption":
+        context.user_data["awaiting"] = "saved_caption"
+        cur = data.get("saved_caption", "") or "(কোনো ক্যাপশন সেট নেই)"
+        await query.edit_message_text(
+            f"📝 <b>বর্তমান সেভ করা ক্যাপশন:</b>\n{cur}\n\n"
+            "নতুন ক্যাপশন লিখে পাঠান যা প্রতিটি পোস্টে অটো যুক্ত হবে।\n"
+            "ক্যাপশন বন্ধ করতে লিখুন: <code>off</code>",
+            parse_mode="HTML"
+        )
     elif action == "manage_channels":
         text, markup = await get_channels_status_markup(context)
         await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
     elif action == "add_channel":
         context.user_data["awaiting"] = "add_channel"
         await query.edit_message_text(
-            "চ্যানেলের আইডি বা ইউজারনেম পাঠান (প্রাইভেট চ্যানেল হলে -100 দিয়ে শুরু আইডি দিন):\n\n"
-            "উদাহরণ: <code>-1002345678901</code> অথবা <code>@mychannel</code>",
+            "চ্যানেলের আইডি বা ইউজারনেম পাঠান (যেমন: <code>-1002345678901</code> অথবা <code>@mychannel</code>)",
             parse_mode="HTML"
         )
     elif action.startswith("rm_channel_"):
@@ -625,7 +657,6 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data.get("banned", {}).pop(target_uid, None)
         save_data(data)
         await query.answer(f"✅ ইউজার {target_uid} কে আনব্যান করা হয়েছে!", show_alert=True)
-        
         text, markup = get_banned_list_markup()
         await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
     elif action == "view_warnings":
@@ -649,7 +680,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur_text = data.get("button_text", "Video Channel")
         cur_url = data.get("button_url", "") or "(সেট করা নেই — বাটন হাইড থাকবে)"
         await query.edit_message_text(
-            "নতুন বাটন সেট করতে এই ফরম্যাটে পাঠান:\n\n"
+            "Welcome মেসেজের জন্য বাটন সেট করতে এই ফরম্যাটে পাঠান:\n\n"
             "বাটন নাম | লিংক\n\n"
             "উদাহরণ:\nVideo Channel | https://t.me/yourchannel\n\n"
             f"বর্তমান বাটন নাম: {cur_text}\nবর্তমান লিংক: {cur_url}\n\n"
@@ -662,7 +693,7 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not awaiting or not is_admin(user_id):
         return
 
-    # Post Caption Set
+    # Post Single-time Caption Set
     if awaiting == "post_caption":
         draft = _post_draft(context, user_id)
         if not draft:
@@ -680,6 +711,18 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data["awaiting"] = None
         raise ApplicationHandlerStop
 
+    # Reusable Saved Caption
+    elif awaiting == "saved_caption":
+        raw = update.message.text.strip()
+        if raw.lower() == "off":
+            data["saved_caption"] = ""
+            save_data(data)
+            await update.message.reply_text("✅ সেভ করা ক্যাপশন মুছে ফেলা হয়েছে।")
+        else:
+            data["saved_caption"] = update.message.text
+            save_data(data)
+            await update.message.reply_text("✅ ডিফল্ট পোস্ট ক্যাপশন সফলভাবে সেভ হয়েছে! এখন থেকে সব পোস্টে এটা অটো চলে আসবে।")
+
     # Post Button Set
     elif awaiting == "post_button":
         draft = _post_draft(context, user_id)
@@ -695,13 +738,13 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
         btn_text, btn_url = raw.split("|", 1)
         btn_text, btn_url = btn_text.strip(), btn_url.strip()
         if not (btn_url.startswith("http://") or btn_url.startswith("https://") or btn_url.startswith("t.me/") or btn_url.startswith("tg://")):
-            await update.message.reply_text("❌ লিংক সঠিক ফরম্যাটে দিন (http:// বা https:// দিয়ে শুরু)। আবার চেষ্টা করুন।")
+            await update.message.reply_text("❌ লিংক সঠিক ফরম্যাটে দিন (http:// বা https:// দিয়ে শুরু)।")
             context.user_data["awaiting"] = "post_button"
             return
         if btn_url.startswith("t.me/"):
             btn_url = "https://" + btn_url
-        if len(draft["buttons"]) >= 4:
-            await update.message.reply_text("সর্বোচ্চ ৪টা বাটন যোগ করা যাবে।")
+        if len(draft["buttons"]) >= 5:
+            await update.message.reply_text("সর্বোচ্চ ৫টা বাটন যোগ করা যাবে।")
         else:
             draft["buttons"].append({"text": btn_text or "Button", "url": btn_url})
         await update.message.reply_html(post_preview_text(draft), reply_markup=post_editor_markup(draft))
@@ -721,7 +764,7 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
             save_data(data)
             await update.message.reply_html(f"✅ নতুন চ্যানেল যোগ হয়েছে: <code>{raw}</code>")
 
-    # Extra Button Set for welcome/goodbye
+    # Extra Button Set for welcome
     elif awaiting == "button":
         raw = update.message.text.strip()
         if raw.lower() == "off":
@@ -732,7 +775,7 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
             btn_text, btn_url = raw.split("|", 1)
             btn_text, btn_url = btn_text.strip(), btn_url.strip()
             if not (btn_url.startswith("http://") or btn_url.startswith("https://") or btn_url.startswith("t.me/") or btn_url.startswith("tg://")):
-                await update.message.reply_text("❌ লিংক সঠিক ফরম্যাটে দিন (http:// বা https:// দিয়ে শুরু)। আবার চেষ্টা করুন।")
+                await update.message.reply_text("❌ লিংক সঠিক ফরম্যাটে দিন (http:// বা https:// দিয়ে শুরু)।")
                 context.user_data["awaiting"] = "button"
                 return
             if btn_url.startswith("t.me/"):
@@ -809,12 +852,8 @@ def main():
     # Auto Approve Member Join Requests (Channel & Group)
     app.add_handler(ChatJoinRequestHandler(auto_approve_request))
 
-    # Real-time Chat Member Status Updates
+    # Real-time Chat Member Status Updates (Duplicate-safe Welcome/Goodbye)
     app.add_handler(ChatMemberHandler(chat_member_update, ChatMemberHandler.CHAT_MEMBER))
-
-    # Fallback status updates
-    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, greet_new_member))
-    app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, farewell_member))
 
     # Admin Callback Queries
     app.add_handler(CallbackQueryHandler(admin_callback))
@@ -827,14 +866,13 @@ def main():
     # Private text inputs
     app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, admin_text_capture))
 
-    # Anti-link/promo automod in groups
+    # Anti-link / promo / inbox automod in groups
     app.add_handler(MessageHandler(
         filters.ChatType.GROUPS & (filters.TEXT | filters.CAPTION) & ~filters.COMMAND,
         anti_link_automod
     ))
 
     logger.info("Bot starting...")
-    # Update.ALL_TYPES ensures chat_join_request is captured
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
