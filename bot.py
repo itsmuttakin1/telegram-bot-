@@ -54,20 +54,27 @@ DEFAULT_PERMANENT_BUTTON = {
     "url": "https://t.me/+f0vawMiFO75mNDM1"
 }
 
-# 2-ti permanent channel ebong tader alada alada caption
+# 3-ti permanent channel ebong tader alada alada caption
 PERMANENT_CHANNELS = {
     -1004427297260: "Full Video   https://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8",
+    -1004422557441: "Full Video   https://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8",
     -1003529904183: "Full videohttps://auctionr.org/4/350196c9ce2f0594548deaee7d421812"
 }
+
+# Welcome, Goodbye ar periodic message-er permanent buttons
+def get_group_action_markup():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("পাবলিক গ্রুপ", url="https://t.me/+f0vawMiFO75mNDM1")],
+        [InlineKeyboardButton("Invite Friend", url="https://t.me/+N4Qum_s5qFQ3NWI1")]
+    ])
 
 DEFAULT_DATA = {
     "warnings": {},          # "chat_id:user_id" -> count
     "banned": {},            # user_id(str) -> {"reason": str, "chat_id": int/str}
+    "active_groups": [],     # active group ids for periodic invite reminders
     "antilink_enabled": True,
     "auto_approve_enabled": True,
     "whitelist_links": [],
-    "button_text": "Video Channel",
-    "button_url": "",        
     "saved_caption": "",     
 }
 
@@ -78,6 +85,8 @@ def load_data():
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 saved = json.load(f)
             merged.update(saved)
+            if not isinstance(merged.get("active_groups"), list):
+                merged["active_groups"] = []
         except Exception as e:
             logger.error(f"Error loading data.json: {e}")
     return merged
@@ -107,6 +116,13 @@ async def delete_message_after_delay(chat_id: int, message_id: int, context: Con
     except Exception as e:
         logger.debug(f"Auto delete message failed: {e}")
 
+# Track active groups
+def register_group(chat_id: int):
+    groups = data.setdefault("active_groups", [])
+    if chat_id not in groups:
+        groups.append(chat_id)
+        save_data(data)
+
 # ---------- Auto Approve Join Request ----------
 async def auto_approve_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not data.get("auto_approve_enabled", True):
@@ -121,17 +137,12 @@ async def auto_approve_request(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.error(f"Failed to auto-approve: {e}")
 
 # ---------- Welcome / Goodbye (Duplicate Protected + Auto-Delete) ----------
-def extra_button_markup():
-    url = data.get("button_url", "").strip()
-    if not url:
-        return None
-    text = data.get("button_text", "Video Channel").strip() or "Video Channel"
-    return InlineKeyboardMarkup([[InlineKeyboardButton(text, url=url)]])
-
 async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if not chat or chat.type not in ("group", "supergroup"):
         return
+
+    register_group(chat.id)
 
     result = update.chat_member
     if not result:
@@ -165,7 +176,7 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 chat_id=chat.id,
                 text=text,
                 parse_mode="HTML",
-                reply_markup=extra_button_markup()
+                reply_markup=get_group_action_markup()
             )
             asyncio.create_task(delete_message_after_delay(chat.id, sent_msg.message_id, context, 60))
         except Exception as e:
@@ -184,11 +195,34 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 chat_id=chat.id,
                 text=text,
                 parse_mode="HTML",
-                reply_markup=extra_button_markup()
+                reply_markup=get_group_action_markup()
             )
             asyncio.create_task(delete_message_after_delay(chat.id, sent_msg.message_id, context, 60))
         except Exception as e:
             logger.error(f"Goodbye message error in {chat.id}: {e}")
+
+# ---------- Periodic Invite Reminder (Only Groups) ----------
+async def periodic_invite_reminder(context: ContextTypes.DEFAULT_TYPE):
+    groups = data.get("active_groups", [])
+    text = (
+        "📢 <b>বন্ধুদের ইনভাইট করুন!</b> 🔥\n\n"
+        "আমাদের গ্রুপের নতুন সব ভাইরাল ও প্রিমিয়াম আপডেট পেতে আপনার বন্ধুদেরও যুক্ত করুন।\n"
+        "নিচের বাটনে ক্লিক করে বন্ধুদের সাথে লিঙ্ক শেয়ার করুন 👇"
+    )
+    markup = get_group_action_markup()
+
+    for chat_id in list(groups):
+        try:
+            sent_msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode="HTML",
+                reply_markup=markup
+            )
+            # 5 minute (300 sec) por reminder message delete hoye jabe
+            asyncio.create_task(delete_message_after_delay(chat_id, sent_msg.message_id, context, 300))
+        except Exception as e:
+            logger.debug(f"Failed to send invite reminder in {chat_id}: {e}")
 
 # ---------- Warning / Ban ----------
 async def issue_warning(update: Update, context: ContextTypes.DEFAULT_TYPE, target, reason: str):
@@ -306,6 +340,8 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg or update.effective_chat.type not in ("group", "supergroup"):
         return
 
+    register_group(update.effective_chat.id)
+
     if msg.is_automatic_forward or getattr(msg, "sender_chat", None) is not None:
         return
 
@@ -351,7 +387,7 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await issue_warning(update, context, user, reason)
     raise ApplicationHandlerStop
 
-# ---------- Multi-Channel Post System (Permanent 2 Channels) ----------
+# ---------- Multi-Channel Post System (Permanent 3 Channels) ----------
 def _post_draft(context: ContextTypes.DEFAULT_TYPE, user_id: int):
     drafts = context.bot_data.setdefault("post_draft", {})
     return drafts.get(user_id)
@@ -367,7 +403,7 @@ def post_editor_markup(draft):
     rows.append([InlineKeyboardButton("✏️ এক্সট্রা টেক্সট যোগ/বদল", callback_data="post_set_caption")])
     if len(draft["buttons"]) < 5:
         rows.append([InlineKeyboardButton("➕ আরও বাটন যোগ করুন", callback_data="post_add_btn")])
-    rows.append([InlineKeyboardButton("✅ উভয় চ্যানেলে পোস্ট করুন", callback_data="post_publish")])
+    rows.append([InlineKeyboardButton("✅ ৩টি চ্যানেলে পোস্ট করুন", callback_data="post_publish")])
     rows.append([InlineKeyboardButton("❌ বাতিল করুন", callback_data="post_cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -376,9 +412,10 @@ def post_preview_text(draft):
     extra_txt = f"\n📝 <b>অতিরিক্ত টেক্সট:</b> {extra}" if extra else ""
 
     lines = [
-        "📋 <b>পোস্ট প্রিভিউ (উভয় চ্যানেলে আলাদা ক্যাপশন যাবে):</b>",
-        f"🎯 <b>টার্গেট চ্যানেল ১ (-1004427297260):</b>\n<code>{PERMANENT_CHANNELS[-1004427297260]}</code>",
-        f"🎯 <b>টার্গেট চ্যানেল ২ (-1003529904183):</b>\n<code>{PERMANENT_CHANNELS[-1003529904183]}</code>",
+        "📋 <b>পোস্ট প্রিভিউ (৩টি চ্যানেলে আলাদা ক্যাপশন যাবে):</b>",
+        f"🎯 <b>চ্যানেল ১ (-1004427297260):</b>\n<code>{PERMANENT_CHANNELS[-1004427297260]}</code>\n",
+        f"🎯 <b>চ্যানেল ২ (-1004422557441):</b>\n<code>{PERMANENT_CHANNELS[-1004422557441]}</code>\n",
+        f"🎯 <b>চ্যানেল ৩ (-1003529904183):</b>\n<code>{PERMANENT_CHANNELS[-1003529904183]}</code>",
         extra_txt,
         "\n🔘 <b>যুক্ত করা বাটন:</b>"
     ]
@@ -397,8 +434,8 @@ async def start_post_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data.setdefault("post_draft", {})[user_id] = None
     context.user_data["awaiting"] = "post_video"
     await update.effective_message.reply_text(
-        "ভিডিও অথবা ছবি পাঠান যেটা উভয় চ্যানেলে পোস্ট করতে চান।\n"
-        "চ্যানেল দুটিতে তাদের নির্ধারিত কাস্টম ক্যাপশন অটো চলে যাবে।\n"
+        "ভিডিও অথবা ছবি পাঠান যেটা ৩টি চ্যানেলে পোস্ট করতে চান।\n"
+        "প্রতিটি চ্যানেলে নিজস্ব ক্যাপশন অটো চলে যাবে।\n"
         "বাতিল করতে /cancel লিখুন।"
     )
 
@@ -416,7 +453,6 @@ async def post_video_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         return
 
-    # Use msg caption or saved extra text if available
     extra_caption = msg.caption or data.get("saved_caption", "")
     
     draft = {
@@ -448,7 +484,6 @@ def admin_panel_markup():
         [InlineKeyboardButton("⚠️ ওয়ার্নিং লিস্ট দেখুন", callback_data="view_warnings")],
         [InlineKeyboardButton(f"🔗 অটো-ওয়ার্ন (লিংক): {antilink}", callback_data="toggle_antilink")],
         [InlineKeyboardButton(f"⚡ অটো জয়েন এপ্রুভ: {auto_appr}", callback_data="toggle_auto_approve")],
-        [InlineKeyboardButton("🔘 Welcome/Goodbye বাটন সেট", callback_data="set_button")],
         [InlineKeyboardButton("🎯 স্থায়ী চ্যানেল ও ক্যাপশন দেখুন", callback_data="view_channels_status")],
         [InlineKeyboardButton("📢 চ্যানেলে নতুন পোস্ট বানান", callback_data="new_post")],
     ]
@@ -507,7 +542,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("অনুমতি নেই।")
         return
 
-    # Post creation flow actions
+    # Post flow
     if action in ("new_post", "post_add_btn", "post_set_caption", "post_cancel", "post_publish") or action.startswith("post_rm_") or action == "perm_btn_info":
         if action == "perm_btn_info":
             await query.answer("এই বাটনটি ডিফল্ট স্থায়ী বাটন, সরানো যাবে না।", show_alert=True)
@@ -556,7 +591,6 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             success_count, fail_count = 0, 0
             extra_caption = draft.get("caption", "").strip()
 
-            # Prottek permanent channel-e tar specific caption diye post
             for ch_id, base_caption in PERMANENT_CHANNELS.items():
                 final_caption = f"{extra_caption}\n\n{base_caption}" if extra_caption else base_caption
                 try:
@@ -589,7 +623,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # Panel Navigation & Settings
+    # Panel Navigation
     if action == "back_to_panel":
         await query.edit_message_text("🛠 অ্যাডমিন প্যানেল", reply_markup=admin_panel_markup())
     elif action == "view_channels_status":
@@ -629,17 +663,6 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status_txt = "চালু" if data["auto_approve_enabled"] else "বন্ধ"
         await query.answer(f"⚡ অটো এপ্রুভ {status_txt} করা হয়েছে!", show_alert=True)
         await query.edit_message_text("🛠 অ্যাডমিন প্যানেল", reply_markup=admin_panel_markup())
-    elif action == "set_button":
-        context.user_data["awaiting"] = "button"
-        cur_text = data.get("button_text", "Video Channel")
-        cur_url = data.get("button_url", "") or "(সেট করা নেই — বাটন হাইড থাকবে)"
-        await query.edit_message_text(
-            "Welcome মেসেজের জন্য বাটন সেট করতে এই ফরম্যাটে পাঠান:\n\n"
-            "বাটন নাম | লিংক\n\n"
-            "উদাহরণ:\nVideo Channel | https://t.me/yourchannel\n\n"
-            f"বর্তমান বাটন নাম: {cur_text}\nবর্তমান লিংক: {cur_url}\n\n"
-            "বাটন বন্ধ করতে শুধু লিখুন: off"
-        )
 
 async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
     awaiting = context.user_data.get("awaiting")
@@ -647,7 +670,7 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not awaiting or not is_admin(user_id):
         return
 
-    # Post Single-time Extra Caption Set
+    # Post Extra Text Set
     if awaiting == "post_caption":
         draft = _post_draft(context, user_id)
         if not draft:
@@ -692,31 +715,6 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_html(post_preview_text(draft), reply_markup=post_editor_markup(draft))
         context.user_data["awaiting"] = None
         raise ApplicationHandlerStop
-
-    # Extra Button Set for welcome
-    elif awaiting == "button":
-        raw = update.message.text.strip()
-        if raw.lower() == "off":
-            data["button_url"] = ""
-            save_data(data)
-            await update.message.reply_text("✅ বাটন বন্ধ করা হয়েছে।")
-        elif "|" in raw:
-            btn_text, btn_url = raw.split("|", 1)
-            btn_text, btn_url = btn_text.strip(), btn_url.strip()
-            if not (btn_url.startswith("http://") or btn_url.startswith("https://") or btn_url.startswith("t.me/") or btn_url.startswith("tg://")):
-                await update.message.reply_text("❌ লিংক সঠিক ফরম্যাটে দিন (http:// বা https:// দিয়ে শুরু)।")
-                context.user_data["awaiting"] = "button"
-                return
-            if btn_url.startswith("t.me/"):
-                btn_url = "https://" + btn_url
-            data["button_text"] = btn_text or "Video Channel"
-            data["button_url"] = btn_url
-            save_data(data)
-            await update.message.reply_text(f"✅ বাটন সেট হয়েছে: {data['button_text']} → {data['button_url']}")
-        else:
-            await update.message.reply_text("❌ ফরম্যাট ভুল। এভাবে পাঠান: বাটন নাম | লিংক")
-            context.user_data["awaiting"] = "button"
-            return
 
     context.user_data["awaiting"] = None
     raise ApplicationHandlerStop
@@ -800,6 +798,10 @@ def main():
         filters.ChatType.GROUPS & (filters.TEXT | filters.CAPTION) & ~filters.COMMAND,
         anti_link_automod
     ))
+
+    # JobQueue: Prottek 30 minute por group-e automatic friend invite reminder pathabe
+    if app.job_queue:
+        app.job_queue.run_repeating(periodic_invite_reminder, interval=1800, first=60)
 
     logger.info("Bot starting...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
