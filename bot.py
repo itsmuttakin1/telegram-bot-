@@ -17,7 +17,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-ADMIN_IDS = {5140546628, 7728010216}
+
+# 3 jon admin access pabe
+ADMIN_IDS = {5140546628, 7728010216, 8967715315}
 
 DATA_FILE = "data.json"
 
@@ -52,6 +54,12 @@ DEFAULT_PERMANENT_BUTTON = {
     "url": "https://t.me/+f0vawMiFO75mNDM1"
 }
 
+# 2-ti permanent channel ebong tader alada alada caption
+PERMANENT_CHANNELS = {
+    -1004427297260: "Full Video   https://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8",
+    -1003529904183: "Full videohttps://auctionr.org/4/350196c9ce2f0594548deaee7d421812"
+}
+
 DEFAULT_DATA = {
     "warnings": {},          # "chat_id:user_id" -> count
     "banned": {},            # user_id(str) -> {"reason": str, "chat_id": int/str}
@@ -60,8 +68,7 @@ DEFAULT_DATA = {
     "whitelist_links": [],
     "button_text": "Video Channel",
     "button_url": "",        
-    "channels": [],          
-    "saved_caption": "",     # Reusable post caption
+    "saved_caption": "",     
 }
 
 def load_data():
@@ -70,11 +77,7 @@ def load_data():
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 saved = json.load(f)
-            if "channel_id" in saved and saved["channel_id"]:
-                merged["channels"] = [saved["channel_id"]]
             merged.update(saved)
-            if not isinstance(merged.get("channels"), list):
-                merged["channels"] = [merged["channels"]] if merged.get("channels") else []
         except Exception as e:
             logger.error(f"Error loading data.json: {e}")
     return merged
@@ -85,7 +88,6 @@ def save_data(data_obj):
 
 data = load_data()
 
-# Duplicate greet prevention cache: (chat_id, user_id, event_type) -> timestamp
 recent_greets = {}
 
 def is_admin(user_id: int) -> bool:
@@ -97,12 +99,6 @@ async def is_group_admin(update: Update, context: ContextTypes.DEFAULT_TYPE, use
         return member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
     except Exception:
         return False
-
-def format_target_chat(raw_id: str):
-    raw = str(raw_id).strip()
-    if raw.startswith("-") or raw.isdigit():
-        return int(raw)
-    return raw
 
 async def delete_message_after_delay(chat_id: int, message_id: int, context: ContextTypes.DEFAULT_TYPE, delay_seconds: int = 60):
     try:
@@ -151,7 +147,6 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # User Joined
     if old_status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED) and new_status in (ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED):
-        # 10s duplicate protection
         key = (chat.id, user.id, "welcome")
         if now - recent_greets.get(key, 0) < 10:
             return
@@ -281,7 +276,6 @@ PROMO_KEYWORDS = [
     "লিংকে ক্লিক", "সাবস্ক্রাইব",
 ]
 
-# Inbox / DM keywords - just silent delete
 INBOX_KEYWORDS_PATTERN = re.compile(
     r"\b(inbox|dm|ib|pm|ইনবক্স|ইনবক্সে|ইনবক্স করো|ইনবক্স করুন|dm me|inbox me)\b",
     re.IGNORECASE
@@ -312,7 +306,6 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg or update.effective_chat.type not in ("group", "supergroup"):
         return
 
-    # Channel auto-forward ignore
     if msg.is_automatic_forward or getattr(msg, "sender_chat", None) is not None:
         return
 
@@ -324,7 +317,6 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = msg.text or msg.caption or ""
 
-    # 1. Inbox / DM word detect -> Just delete message without warning
     if INBOX_KEYWORDS_PATTERN.search(text):
         try:
             await msg.delete()
@@ -359,7 +351,7 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await issue_warning(update, context, user, reason)
     raise ApplicationHandlerStop
 
-# ---------- Multi-Channel Post System ----------
+# ---------- Multi-Channel Post System (Permanent 2 Channels) ----------
 def _post_draft(context: ContextTypes.DEFAULT_TYPE, user_id: int):
     drafts = context.bot_data.setdefault("post_draft", {})
     return drafts.get(user_id)
@@ -367,30 +359,31 @@ def _post_draft(context: ContextTypes.DEFAULT_TYPE, user_id: int):
 def post_editor_markup(draft):
     rows = []
     for i, btn in enumerate(draft["buttons"]):
-        # Permanent button deletion disallowed
         if i == 0 and btn.get("url") == DEFAULT_PERMANENT_BUTTON["url"]:
             rows.append([InlineKeyboardButton(f"🔒 {btn['text']} (স্থায়ী)", callback_data="perm_btn_info")])
         else:
             rows.append([InlineKeyboardButton(f"❌ বাটন মুছুন: {btn['text']}", callback_data=f"post_rm_{i}")])
     
-    rows.append([InlineKeyboardButton("✏️ ক্যাপশন পরিবর্তন", callback_data="post_set_caption")])
+    rows.append([InlineKeyboardButton("✏️ এক্সট্রা টেক্সট যোগ/বদল", callback_data="post_set_caption")])
     if len(draft["buttons"]) < 5:
         rows.append([InlineKeyboardButton("➕ আরও বাটন যোগ করুন", callback_data="post_add_btn")])
-    rows.append([InlineKeyboardButton("✅ সব চ্যানেলে পোস্ট করুন", callback_data="post_publish")])
+    rows.append([InlineKeyboardButton("✅ উভয় চ্যানেলে পোস্ট করুন", callback_data="post_publish")])
     rows.append([InlineKeyboardButton("❌ বাতিল করুন", callback_data="post_cancel")])
     return InlineKeyboardMarkup(rows)
 
 def post_preview_text(draft):
-    channels_count = len(data.get("channels", []))
+    extra = draft.get("caption", "").strip()
+    extra_txt = f"\n📝 <b>অতিরিক্ত টেক্সট:</b> {extra}" if extra else ""
+
     lines = [
-        "📋 <b>পোস্ট প্রিভিউ</b>",
-        f"🎯 টার্গেট চ্যানেল সংখ্যা: <b>{channels_count} টি</b>",
-        f"📝 <b>ক্যাপশন:</b> {draft['caption'] or '(কোনো ক্যাপশন নেই)'}\n"
+        "📋 <b>পোস্ট প্রিভিউ (উভয় চ্যানেলে আলাদা ক্যাপশন যাবে):</b>",
+        f"🎯 <b>টার্গেট চ্যানেল ১ (-1004427297260):</b>\n<code>{PERMANENT_CHANNELS[-1004427297260]}</code>",
+        f"🎯 <b>টার্গেট চ্যানেল ২ (-1003529904183):</b>\n<code>{PERMANENT_CHANNELS[-1003529904183]}</code>",
+        extra_txt,
+        "\n🔘 <b>যুক্ত করা বাটন:</b>"
     ]
-    if draft["buttons"]:
-        lines.append("🔘 <b>যুক্ত করা বাটন:</b>")
-        for b in draft["buttons"]:
-            lines.append(f"  • {b['text']} ➔ {b['url']}")
+    for b in draft["buttons"]:
+        lines.append(f"  • {b['text']} ➔ {b['url']}")
     return "\n".join(lines)
 
 async def post_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -401,15 +394,11 @@ async def post_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_post_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not data.get("channels"):
-        await update.effective_message.reply_text(
-            "⚠️ কোনো চ্যানেল যোগ করা নেই!\n/ad প্যানেল থেকে '🎯 চ্যানেল ম্যানেজ করুন' চাপুন এবং চ্যানেল আইডি যোগ করুন।"
-        )
-        return
     context.bot_data.setdefault("post_draft", {})[user_id] = None
     context.user_data["awaiting"] = "post_video"
     await update.effective_message.reply_text(
-        "ভিডিও অথবা ছবি পাঠান যেটা চ্যানেলে পোস্ট করতে চান।\n"
+        "ভিডিও অথবা ছবি পাঠান যেটা উভয় চ্যানেলে পোস্ট করতে চান।\n"
+        "চ্যানেল দুটিতে তাদের নির্ধারিত কাস্টম ক্যাপশন অটো চলে যাবে।\n"
         "বাতিল করতে /cancel লিখুন।"
     )
 
@@ -427,14 +416,13 @@ async def post_video_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         return
 
-    # Use msg caption if present, otherwise use saved caption
-    final_caption = msg.caption or data.get("saved_caption", "")
+    # Use msg caption or saved extra text if available
+    extra_caption = msg.caption or data.get("saved_caption", "")
     
-    # Always include permanent button as first button
     draft = {
         "kind": kind,
         "file_id": file_id,
-        "caption": final_caption,
+        "caption": extra_caption,
         "buttons": [dict(DEFAULT_PERMANENT_BUTTON)]
     }
     context.bot_data.setdefault("post_draft", {})[user_id] = draft
@@ -452,46 +440,38 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- Admin Panel & Menus ----------
 def admin_panel_markup():
-    channel_count = len(data.get("channels", []))
     auto_appr = "ON ✅" if data.get("auto_approve_enabled", True) else "OFF ❌"
     antilink = "ON ✅" if data.get("antilink_enabled", True) else "OFF ❌"
-    caption_status = "সেট আছে ✅" if data.get("saved_caption") else "খালি ❌"
 
     kb = [
         [InlineKeyboardButton("🚫 ব্যান লিস্ট দেখুন", callback_data="view_banned")],
         [InlineKeyboardButton("⚠️ ওয়ার্নিং লিস্ট দেখুন", callback_data="view_warnings")],
         [InlineKeyboardButton(f"🔗 অটো-ওয়ার্ন (লিংক): {antilink}", callback_data="toggle_antilink")],
         [InlineKeyboardButton(f"⚡ অটো জয়েন এপ্রুভ: {auto_appr}", callback_data="toggle_auto_approve")],
-        [InlineKeyboardButton(f"💾 পোস্ট ক্যাপশন সেট ({caption_status})", callback_data="manage_saved_caption")],
         [InlineKeyboardButton("🔘 Welcome/Goodbye বাটন সেট", callback_data="set_button")],
-        [InlineKeyboardButton(f"🎯 চ্যানেল ম্যানেজ করুন ({channel_count} টি)", callback_data="manage_channels")],
+        [InlineKeyboardButton("🎯 স্থায়ী চ্যানেল ও ক্যাপশন দেখুন", callback_data="view_channels_status")],
         [InlineKeyboardButton("📢 চ্যানেলে নতুন পোস্ট বানান", callback_data="new_post")],
     ]
     return InlineKeyboardMarkup(kb)
 
 async def get_channels_status_markup(context: ContextTypes.DEFAULT_TYPE):
-    channels = data.get("channels", [])
-    kb = []
-    lines = ["🎯 <b>টার্গেট চ্যানেল লিস্ট ও স্ট্যাটাস:</b>\n"]
+    kb = [[InlineKeyboardButton("🔙 ফিরে যান", callback_data="back_to_panel")]]
+    lines = ["🎯 <b>স্থায়ী টার্গেট চ্যানেল ও ক্যাপশন লিস্ট:</b>\n"]
 
-    if channels:
-        for idx, ch in enumerate(channels):
-            chat_target = format_target_chat(ch)
-            admin_status = "❌ Admin নেই / Not Found"
-            try:
-                me = await context.bot.get_chat_member(chat_target, context.bot.id)
-                if me.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
-                    admin_status = "✅ Admin সক্রিয়"
-            except Exception:
-                admin_status = "❌ Error"
+    for ch_id, default_cap in PERMANENT_CHANNELS.items():
+        admin_status = "❌ Admin নেই / Error"
+        try:
+            me = await context.bot.get_chat_member(ch_id, context.bot.id)
+            if me.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
+                admin_status = "✅ Admin সক্রিয়"
+        except Exception:
+            admin_status = "❌ Not Found / Admin নেই"
 
-            lines.append(f"{idx+1}. <code>{ch}</code> ➔ <b>{admin_status}</b>")
-            kb.append([InlineKeyboardButton(f"❌ সরান: {ch}", callback_data=f"rm_channel_{idx}")])
-    else:
-        lines.append("কোনো চ্যানেল যোগ করা নেই।")
+        lines.append(
+            f"📍 <code>{ch_id}</code> ➔ <b>{admin_status}</b>\n"
+            f"📝 <i>ক্যাপশন:</i> <code>{default_cap}</code>\n"
+        )
 
-    kb.append([InlineKeyboardButton("➕ নতুন চ্যানেল যোগ করুন", callback_data="add_channel")])
-    kb.append([InlineKeyboardButton("🔙 ফিরে যান", callback_data="back_to_panel")])
     return "\n".join(lines), InlineKeyboardMarkup(kb)
 
 def get_banned_list_markup():
@@ -527,7 +507,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("অনুমতি নেই।")
         return
 
-    # Post flow actions
+    # Post creation flow actions
     if action in ("new_post", "post_add_btn", "post_set_caption", "post_cancel", "post_publish") or action.startswith("post_rm_") or action == "perm_btn_info":
         if action == "perm_btn_info":
             await query.answer("এই বাটনটি ডিফল্ট স্থায়ী বাটন, সরানো যাবে না।", show_alert=True)
@@ -545,12 +525,13 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if action == "post_set_caption":
             context.user_data["awaiting"] = "post_caption"
             await query.edit_message_text(
-                "পোস্টের ক্যাপশন লিখে পাঠান:\n(ক্যাপশন খালি করতে চাইলে <code>clear</code> লিখে পাঠান)",
+                "ক্যাপশনের সাথে অতিরিক্ত কোনো টেক্সট যোগ করতে চাইলে লিখে পাঠান:\n"
+                "(মুছে ফেলতে চাইলে <code>clear</code> লিখে পাঠান)",
                 parse_mode="HTML"
             )
         elif action == "post_add_btn":
             if len(draft["buttons"]) >= 5:
-                await query.answer("সর্বোচ্চ ৫টা বাটন যোগ করা যাবে।", show_alert=True)
+                await query.answer("সর্বোচ্চ ৫টি বাটন যোগ করা যাবে।", show_alert=True)
                 return
             context.user_data["awaiting"] = "post_button"
             await query.edit_message_text(
@@ -567,38 +548,35 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["awaiting"] = None
             await query.edit_message_text("❌ পোস্ট বাতিল করা হয়েছে।")
         elif action == "post_publish":
-            channels = data.get("channels", [])
-            if not channels:
-                await query.edit_message_text("কোনো চ্যানেল সেট করা নেই।")
-                return
-
             markup = None
             if draft["buttons"]:
                 rows = [[InlineKeyboardButton(b["text"], url=b["url"])] for b in draft["buttons"]]
                 markup = InlineKeyboardMarkup(rows)
 
             success_count, fail_count = 0, 0
-            for ch in channels:
-                chat_target = format_target_chat(ch)
+            extra_caption = draft.get("caption", "").strip()
+
+            # Prottek permanent channel-e tar specific caption diye post
+            for ch_id, base_caption in PERMANENT_CHANNELS.items():
+                final_caption = f"{extra_caption}\n\n{base_caption}" if extra_caption else base_caption
                 try:
                     if draft["kind"] == "video":
                         await context.bot.send_video(
-                            chat_id=chat_target, video=draft["file_id"],
-                            caption=draft["caption"] or None, reply_markup=markup
+                            chat_id=ch_id, video=draft["file_id"],
+                            caption=final_caption, reply_markup=markup
                         )
                     else:
                         await context.bot.send_photo(
-                            chat_id=chat_target, photo=draft["file_id"],
-                            caption=draft["caption"] or None, reply_markup=markup
+                            chat_id=ch_id, photo=draft["file_id"],
+                            caption=final_caption, reply_markup=markup
                         )
                     success_count += 1
                 except Exception as e:
-                    logger.error(f"Failed to post in {ch}: {e}")
+                    logger.error(f"Failed to post in {ch_id}: {e}")
                     fail_count += 1
 
             context.bot_data.setdefault("post_draft", {})[user_id] = None
             
-            # Post success er por direct arekta post korar button
             again_markup = InlineKeyboardMarkup([
                 [InlineKeyboardButton("📢 আরেকটি পোস্ট করুন", callback_data="new_post")],
                 [InlineKeyboardButton("🛠 অ্যাডমিন প্যানেল", callback_data="back_to_panel")]
@@ -614,31 +592,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Panel Navigation & Settings
     if action == "back_to_panel":
         await query.edit_message_text("🛠 অ্যাডমিন প্যানেল", reply_markup=admin_panel_markup())
-    elif action == "manage_saved_caption":
-        context.user_data["awaiting"] = "saved_caption"
-        cur = data.get("saved_caption", "") or "(কোনো ক্যাপশন সেট নেই)"
-        await query.edit_message_text(
-            f"📝 <b>বর্তমান সেভ করা ক্যাপশন:</b>\n{cur}\n\n"
-            "নতুন ক্যাপশন লিখে পাঠান যা প্রতিটি পোস্টে অটো যুক্ত হবে।\n"
-            "ক্যাপশন বন্ধ করতে লিখুন: <code>off</code>",
-            parse_mode="HTML"
-        )
-    elif action == "manage_channels":
-        text, markup = await get_channels_status_markup(context)
-        await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
-    elif action == "add_channel":
-        context.user_data["awaiting"] = "add_channel"
-        await query.edit_message_text(
-            "চ্যানেলের আইডি বা ইউজারনেম পাঠান (যেমন: <code>-1002345678901</code> অথবা <code>@mychannel</code>)",
-            parse_mode="HTML"
-        )
-    elif action.startswith("rm_channel_"):
-        idx = int(action.replace("rm_channel_", ""))
-        channels = data.get("channels", [])
-        if 0 <= idx < len(channels):
-            removed = channels.pop(idx)
-            save_data(data)
-            await query.answer(f"❌ চ্যানেল {removed} সরানো হয়েছে!", show_alert=True)
+    elif action == "view_channels_status":
         text, markup = await get_channels_status_markup(context)
         await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
     elif action == "view_banned":
@@ -693,7 +647,7 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not awaiting or not is_admin(user_id):
         return
 
-    # Post Single-time Caption Set
+    # Post Single-time Extra Caption Set
     if awaiting == "post_caption":
         draft = _post_draft(context, user_id)
         if not draft:
@@ -703,27 +657,15 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
         raw = update.message.text.strip()
         if raw.lower() == "clear":
             draft["caption"] = ""
-            await update.message.reply_text("✅ ক্যাপশন মুছে ফেলা হয়েছে।")
+            await update.message.reply_text("✅ অতিরিক্ত টেক্সট মুছে ফেলা হয়েছে।")
         else:
             draft["caption"] = update.message.text
-            await update.message.reply_text("✅ ক্যাপশন সেট করা হয়েছে।")
+            await update.message.reply_text("✅ অতিরিক্ত টেক্সট সেট করা হয়েছে।")
         await update.message.reply_html(post_preview_text(draft), reply_markup=post_editor_markup(draft))
         context.user_data["awaiting"] = None
         raise ApplicationHandlerStop
 
-    # Reusable Saved Caption
-    elif awaiting == "saved_caption":
-        raw = update.message.text.strip()
-        if raw.lower() == "off":
-            data["saved_caption"] = ""
-            save_data(data)
-            await update.message.reply_text("✅ সেভ করা ক্যাপশন মুছে ফেলা হয়েছে।")
-        else:
-            data["saved_caption"] = update.message.text
-            save_data(data)
-            await update.message.reply_text("✅ ডিফল্ট পোস্ট ক্যাপশন সফলভাবে সেভ হয়েছে! এখন থেকে সব পোস্টে এটা অটো চলে আসবে।")
-
-    # Post Button Set
+    # Post Extra Button Set
     elif awaiting == "post_button":
         draft = _post_draft(context, user_id)
         if not draft:
@@ -744,25 +686,12 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if btn_url.startswith("t.me/"):
             btn_url = "https://" + btn_url
         if len(draft["buttons"]) >= 5:
-            await update.message.reply_text("সর্বোচ্চ ৫টা বাটন যোগ করা যাবে।")
+            await update.message.reply_text("সর্বোচ্চ ৫টি বাটন যোগ করা যাবে।")
         else:
             draft["buttons"].append({"text": btn_text or "Button", "url": btn_url})
         await update.message.reply_html(post_preview_text(draft), reply_markup=post_editor_markup(draft))
         context.user_data["awaiting"] = None
         raise ApplicationHandlerStop
-
-    # Channel add
-    elif awaiting == "add_channel":
-        raw = update.message.text.strip()
-        if raw.isdigit():
-            raw = f"-100{raw}"
-        channels = data.setdefault("channels", [])
-        if raw in channels:
-            await update.message.reply_text("⚠️ এই চ্যানেল আগে থেকেই লিস্টে আছে!")
-        else:
-            channels.append(raw)
-            save_data(data)
-            await update.message.reply_html(f"✅ নতুন চ্যানেল যোগ হয়েছে: <code>{raw}</code>")
 
     # Extra Button Set for welcome
     elif awaiting == "button":
