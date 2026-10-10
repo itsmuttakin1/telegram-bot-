@@ -5,6 +5,7 @@ import time
 import asyncio
 import logging
 import threading
+from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -54,10 +55,13 @@ DEFAULT_PERMANENT_BUTTON = {
     "url": "https://t.me/+f0vawMiFO75mNDM1"
 }
 
+CLEAN_CHANNEL_ID = -1004422557441
+NOTIFY_GROUP_ID = -1004427297260
+
 # 2-ti permanent channel ebong tader styled emoji caption
 PERMANENT_CHANNELS = {
     -1004427297260: "Full Video 👇\nhttps://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8",
-    -1004422557441: "Full Video 👇\nhttps://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8"
+    CLEAN_CHANNEL_ID: "Full Video 👇\nhttps://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8"
 }
 
 # Welcome, Goodbye ar periodic message-er permanent buttons
@@ -73,6 +77,8 @@ DEFAULT_DATA = {
     "active_groups": [],     # active group ids for periodic invite reminders
     "antilink_enabled": True,
     "auto_approve_enabled": True,
+    "channel_clean_enabled": True, # Auto clean 2 days old posts
+    "clean_channel_posts": [],     # [{"message_id": int, "timestamp": float, "date_str": str}, ...]
     "whitelist_links": [],
     "saved_caption": "",     
 }
@@ -86,6 +92,8 @@ def load_data():
             merged.update(saved)
             if not isinstance(merged.get("active_groups"), list):
                 merged["active_groups"] = []
+            if not isinstance(merged.get("clean_channel_posts"), list):
+                merged["clean_channel_posts"] = []
         except Exception as e:
             logger.error(f"Error loading data.json: {e}")
     return merged
@@ -218,10 +226,61 @@ async def periodic_invite_reminder(context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML",
                 reply_markup=markup
             )
-            # 5 minute (300 sec) por reminder message delete hoye jabe
             asyncio.create_task(delete_message_after_delay(chat_id, sent_msg.message_id, context, 300))
         except Exception as e:
             logger.debug(f"Failed to send invite reminder in {chat_id}: {e}")
+
+# ---------- 2 Days Channel Auto-Clean Service ----------
+async def channel_post_cleaner_job(context: ContextTypes.DEFAULT_TYPE):
+    """2 din (48 hours) por -1004422557441 channel-er post delete korbe ebong group-e notify korbe"""
+    if not data.get("channel_clean_enabled", True):
+        return
+
+    posts = data.get("clean_channel_posts", [])
+    if not posts:
+        return
+
+    now = time.time()
+    two_days_seconds = 2 * 24 * 3600  # 48 ghonta (2 din)
+
+    # Jei postgulo 2 din purono hoyeche segulo alada kora
+    expired_posts = [p for p in posts if now - p.get("timestamp", now) >= two_days_seconds]
+    if not expired_posts:
+        return
+
+    # Tarikh onujayi group kora
+    dates_deleted = {}
+    remaining_posts = []
+
+    for p in posts:
+        if p in expired_posts:
+            mid = p.get("message_id")
+            d_str = p.get("date_str", "পূর্বের")
+            try:
+                await context.bot.delete_message(chat_id=CLEAN_CHANNEL_ID, message_id=mid)
+            except Exception as e:
+                logger.debug(f"Could not delete old post {mid}: {e}")
+            dates_deleted[d_str] = dates_deleted.get(d_str, 0) + 1
+        else:
+            remaining_posts.append(p)
+
+    data["clean_channel_posts"] = remaining_posts
+    save_data(data)
+
+    # Group -1004427297260 e notification message pathano
+    for date_str, count in dates_deleted.items():
+        try:
+            msg_text = (
+                f"🗑️ <b>ক্লিন সার্ভিস আপডেট:</b>\n\n"
+                f"📅 <b>{date_str}</b> তারিখের সকল পোস্ট ({count} টি) সফলভাবে চ্যানেল থেকে ডিলিট করা হয়েছে।"
+            )
+            await context.bot.send_message(
+                chat_id=NOTIFY_GROUP_ID,
+                text=msg_text,
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"Failed to notify group {NOTIFY_GROUP_ID} about cleaned posts: {e}")
 
 # ---------- Warning / Ban ----------
 async def issue_warning(update: Update, context: ContextTypes.DEFAULT_TYPE, target, reason: str):
@@ -413,7 +472,7 @@ def post_preview_text(draft):
     lines = [
         "📋 <b>পোস্ট প্রিভিউ (২টি চ্যানেলে পোস্ট হবে):</b>",
         f"🎯 <b>চ্যানেল ১ (-1004427297260):</b>\n<code>{PERMANENT_CHANNELS[-1004427297260]}</code>\n",
-        f"🎯 <b>চ্যানেল ২ (-1004422557441):</b>\n<code>{PERMANENT_CHANNELS[-1004422557441]}</code>",
+        f"🎯 <b>চ্যানেল ২ ({CLEAN_CHANNEL_ID} - ২ দিন পর ক্লিন হবে):</b>\n<code>{PERMANENT_CHANNELS[CLEAN_CHANNEL_ID]}</code>",
         extra_txt,
         "\n🔘 <b>যুক্ত করা বাটন:</b>"
     ]
@@ -476,12 +535,14 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def admin_panel_markup():
     auto_appr = "ON ✅" if data.get("auto_approve_enabled", True) else "OFF ❌"
     antilink = "ON ✅" if data.get("antilink_enabled", True) else "OFF ❌"
+    clean_svc = "ON ✅" if data.get("channel_clean_enabled", True) else "OFF ❌"
 
     kb = [
         [InlineKeyboardButton("🚫 ব্যান লিস্ট দেখুন", callback_data="view_banned")],
         [InlineKeyboardButton("⚠️ ওয়ার্নিং লিস্ট দেখুন", callback_data="view_warnings")],
         [InlineKeyboardButton(f"🔗 অটো-ওয়ার্ন (লিংক): {antilink}", callback_data="toggle_antilink")],
         [InlineKeyboardButton(f"⚡ অটো জয়েন এপ্রুভ: {auto_appr}", callback_data="toggle_auto_approve")],
+        [InlineKeyboardButton(f"🧹 চ্যানেল ক্লিন সার্ভিস: {clean_svc}", callback_data="toggle_clean_service")],
         [InlineKeyboardButton("🎯 স্থায়ী চ্যানেল ও ক্যাপশন দেখুন", callback_data="view_channels_status")],
         [InlineKeyboardButton("📢 চ্যানেলে নতুন পোস্ট বানান", callback_data="new_post")],
     ]
@@ -500,8 +561,9 @@ async def get_channels_status_markup(context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             admin_status = "❌ Not Found / Admin নেই"
 
+        extra_note = " (২ দিন পর অটো-ক্লিন)" if ch_id == CLEAN_CHANNEL_ID else ""
         lines.append(
-            f"📍 <code>{ch_id}</code> ➔ <b>{admin_status}</b>\n"
+            f"📍 <code>{ch_id}</code>{extra_note} ➔ <b>{admin_status}</b>\n"
             f"📝 <i>ক্যাপশন:</i> <code>{default_cap}</code>\n"
         )
 
@@ -589,20 +651,35 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             success_count, fail_count = 0, 0
             extra_caption = draft.get("caption", "").strip()
 
+            # Bangladesh / Local timezone tarikh
+            bd_tz = timezone(timedelta(hours=6))
+            today_date_str = datetime.now(bd_tz).strftime("%d-%m-%Y")
+
             for ch_id, base_caption in PERMANENT_CHANNELS.items():
                 final_caption = f"{extra_caption}\n\n{base_caption}" if extra_caption else base_caption
                 try:
                     if draft["kind"] == "video":
-                        await context.bot.send_video(
+                        sent_msg = await context.bot.send_video(
                             chat_id=ch_id, video=draft["file_id"],
                             caption=final_caption, reply_markup=markup
                         )
                     else:
-                        await context.bot.send_photo(
+                        sent_msg = await context.bot.send_photo(
                             chat_id=ch_id, photo=draft["file_id"],
                             caption=final_caption, reply_markup=markup
                         )
                     success_count += 1
+
+                    # CLEAN_CHANNEL_ID er post record kora 2 din por delete korar jonno
+                    if ch_id == CLEAN_CHANNEL_ID and sent_msg:
+                        clean_posts = data.setdefault("clean_channel_posts", [])
+                        clean_posts.append({
+                            "message_id": sent_msg.message_id,
+                            "timestamp": time.time(),
+                            "date_str": today_date_str
+                        })
+                        save_data(data)
+
                 except Exception as e:
                     logger.error(f"Failed to post in {ch_id}: {e}")
                     fail_count += 1
@@ -660,6 +737,12 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data(data)
         status_txt = "চালু" if data["auto_approve_enabled"] else "বন্ধ"
         await query.answer(f"⚡ অটো এপ্রুভ {status_txt} করা হয়েছে!", show_alert=True)
+        await query.edit_message_text("🛠 অ্যাডমিন প্যানেল", reply_markup=admin_panel_markup())
+    elif action == "toggle_clean_service":
+        data["channel_clean_enabled"] = not data.get("channel_clean_enabled", True)
+        save_data(data)
+        status_txt = "চালু" if data["channel_clean_enabled"] else "বন্ধ"
+        await query.answer(f"🧹 ক্লিন সার্ভিস {status_txt} করা হয়েছে!", show_alert=True)
         await query.edit_message_text("🛠 অ্যাডমিন প্যানেল", reply_markup=admin_panel_markup())
 
 async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -797,9 +880,12 @@ def main():
         anti_link_automod
     ))
 
-    # Periodic Friend Invite Reminder (Every 30 minutes in active groups)
+    # Jobs
     if app.job_queue:
+        # Periodic Friend Invite Reminder (Every 30 minutes in active groups)
         app.job_queue.run_repeating(periodic_invite_reminder, interval=1800, first=60)
+        # 2 Days Old Channel Posts Auto-Cleaner (Checks every 10 minutes)
+        app.job_queue.run_repeating(channel_post_cleaner_job, interval=600, first=30)
 
     logger.info("Bot starting...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
