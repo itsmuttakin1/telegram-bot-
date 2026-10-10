@@ -54,10 +54,10 @@ DEFAULT_PERMANENT_BUTTON = {
     "url": "https://t.me/+f0vawMiFO75mNDM1"
 }
 
-# Shudhu ei 2-ti permanent channel-e post jabe
+# 2-ti permanent channel ebong tader styled emoji caption
 PERMANENT_CHANNELS = {
-    -1004427297260: "Full Video   https://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8",
-    -1004422557441: "Full Video   https://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8"
+    -1004427297260: "Full Video 👇\nhttps://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8",
+    -1004422557441: "Full Video 👇\nhttps://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8"
 }
 
 # Welcome, Goodbye ar periodic message-er permanent buttons
@@ -218,6 +218,7 @@ async def periodic_invite_reminder(context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML",
                 reply_markup=markup
             )
+            # 5 minute (300 sec) por reminder message delete hoye jabe
             asyncio.create_task(delete_message_after_delay(chat_id, sent_msg.message_id, context, 300))
         except Exception as e:
             logger.debug(f"Failed to send invite reminder in {chat_id}: {e}")
