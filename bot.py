@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
-# 3 jon admin access pabe
-ADMIN_IDS = {5140546628, 7728010216, 8967715315}
+# Sudhu ei 2 jon admin access pabe
+ADMIN_IDS = {5140546628, 7728010216}
 
 DATA_FILE = "data.json"
 
@@ -54,11 +54,10 @@ DEFAULT_PERMANENT_BUTTON = {
     "url": "https://t.me/+f0vawMiFO75mNDM1"
 }
 
-# 3-ti permanent channel ebong tader alada alada caption
+# Shudhu ei 2-ti permanent channel-e post jabe
 PERMANENT_CHANNELS = {
     -1004427297260: "Full Video   https://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8",
-    -1004422557441: "Full Video   https://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8",
-    -1003529904183: "Full videohttps://auctionr.org/4/350196c9ce2f0594548deaee7d421812"
+    -1004422557441: "Full Video   https://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8"
 }
 
 # Welcome, Goodbye ar periodic message-er permanent buttons
@@ -219,7 +218,6 @@ async def periodic_invite_reminder(context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML",
                 reply_markup=markup
             )
-            # 5 minute (300 sec) por reminder message delete hoye jabe
             asyncio.create_task(delete_message_after_delay(chat_id, sent_msg.message_id, context, 300))
         except Exception as e:
             logger.debug(f"Failed to send invite reminder in {chat_id}: {e}")
@@ -387,7 +385,7 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await issue_warning(update, context, user, reason)
     raise ApplicationHandlerStop
 
-# ---------- Multi-Channel Post System (Permanent 3 Channels) ----------
+# ---------- Multi-Channel Post System (Permanent 2 Channels) ----------
 def _post_draft(context: ContextTypes.DEFAULT_TYPE, user_id: int):
     drafts = context.bot_data.setdefault("post_draft", {})
     return drafts.get(user_id)
@@ -403,7 +401,7 @@ def post_editor_markup(draft):
     rows.append([InlineKeyboardButton("✏️ এক্সট্রা টেক্সট যোগ/বদল", callback_data="post_set_caption")])
     if len(draft["buttons"]) < 5:
         rows.append([InlineKeyboardButton("➕ আরও বাটন যোগ করুন", callback_data="post_add_btn")])
-    rows.append([InlineKeyboardButton("✅ ৩টি চ্যানেলে পোস্ট করুন", callback_data="post_publish")])
+    rows.append([InlineKeyboardButton("✅ ২টি চ্যানেলে পোস্ট করুন", callback_data="post_publish")])
     rows.append([InlineKeyboardButton("❌ বাতিল করুন", callback_data="post_cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -412,10 +410,9 @@ def post_preview_text(draft):
     extra_txt = f"\n📝 <b>অতিরিক্ত টেক্সট:</b> {extra}" if extra else ""
 
     lines = [
-        "📋 <b>পোস্ট প্রিভিউ (৩টি চ্যানেলে আলাদা ক্যাপশন যাবে):</b>",
+        "📋 <b>পোস্ট প্রিভিউ (২টি চ্যানেলে পোস্ট হবে):</b>",
         f"🎯 <b>চ্যানেল ১ (-1004427297260):</b>\n<code>{PERMANENT_CHANNELS[-1004427297260]}</code>\n",
-        f"🎯 <b>চ্যানেল ২ (-1004422557441):</b>\n<code>{PERMANENT_CHANNELS[-1004422557441]}</code>\n",
-        f"🎯 <b>চ্যানেল ৩ (-1003529904183):</b>\n<code>{PERMANENT_CHANNELS[-1003529904183]}</code>",
+        f"🎯 <b>চ্যানেল ২ (-1004422557441):</b>\n<code>{PERMANENT_CHANNELS[-1004422557441]}</code>",
         extra_txt,
         "\n🔘 <b>যুক্ত করা বাটন:</b>"
     ]
@@ -434,8 +431,8 @@ async def start_post_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data.setdefault("post_draft", {})[user_id] = None
     context.user_data["awaiting"] = "post_video"
     await update.effective_message.reply_text(
-        "ভিডিও অথবা ছবি পাঠান যেটা ৩টি চ্যানেলে পোস্ট করতে চান।\n"
-        "প্রতিটি চ্যানেলে নিজস্ব ক্যাপশন অটো চলে যাবে।\n"
+        "ভিডিও অথবা ছবি পাঠান যেটা ২টি চ্যানেলে পোস্ট করতে চান।\n"
+        "উভয় চ্যানেলে নিজস্ব ক্যাপশন অটো চলে যাবে।\n"
         "বাতিল করতে /cancel লিখুন।"
     )
 
@@ -799,7 +796,7 @@ def main():
         anti_link_automod
     ))
 
-    # JobQueue: Prottek 30 minute por group-e automatic friend invite reminder pathabe
+    # Periodic Friend Invite Reminder (Every 30 minutes in active groups)
     if app.job_queue:
         app.job_queue.run_repeating(periodic_invite_reminder, interval=1800, first=60)
 
