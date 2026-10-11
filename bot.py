@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
-# Sudhu ei 2 jon admin access pabe
-ADMIN_IDS = {5140546628, 7728010216}
+# 3 jon admin access pabe (8967715315 jog kora hoyeche)
+ADMIN_IDS = {5140546628, 7728010216, 8967715315}
 
 DATA_FILE = "data.json"
 
@@ -58,13 +58,13 @@ DEFAULT_PERMANENT_BUTTON = {
 CLEAN_CHANNEL_ID = -1004422557441
 NOTIFY_GROUP_ID = -1004427297260
 
-# 2-ti permanent channel ebong tader styled emoji caption
+# 3-ti permanent channel ebong tader clickable styled emoji caption
 PERMANENT_CHANNELS = {
     -1004427297260: "Full Video 👇\nhttps://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8",
-    CLEAN_CHANNEL_ID: "Full Video 👇\nhttps://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8"
+    CLEAN_CHANNEL_ID: "Full Video 👇\nhttps://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8",
+    -1003529904183: "Full Video 👇\nhttps://auctionr.org/4/f7aef1875c5940fd01991dfe705874c7"
 }
 
-# Welcome, Goodbye ar periodic message-er permanent buttons
 def get_group_action_markup():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("পাবলিক গ্রুপ", url="https://t.me/+f0vawMiFO75mNDM1")],
@@ -74,11 +74,11 @@ def get_group_action_markup():
 DEFAULT_DATA = {
     "warnings": {},          # "chat_id:user_id" -> count
     "banned": {},            # user_id(str) -> {"reason": str, "chat_id": int/str}
-    "active_groups": [],     # active group ids for periodic invite reminders
+    "active_groups": [],     # active group ids
     "antilink_enabled": True,
     "auto_approve_enabled": True,
-    "channel_clean_enabled": True, # Auto clean 2 days old posts
-    "clean_channel_posts": [],     # [{"message_id": int, "timestamp": float, "date_str": str}, ...]
+    "channel_clean_enabled": True,
+    "clean_channel_posts": [],     
     "whitelist_links": [],
     "saved_caption": "",     
 }
@@ -123,7 +123,6 @@ async def delete_message_after_delay(chat_id: int, message_id: int, context: Con
     except Exception as e:
         logger.debug(f"Auto delete message failed: {e}")
 
-# Track active groups
 def register_group(chat_id: int):
     groups = data.setdefault("active_groups", [])
     if chat_id not in groups:
@@ -232,7 +231,6 @@ async def periodic_invite_reminder(context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- 2 Days Channel Auto-Clean Service ----------
 async def channel_post_cleaner_job(context: ContextTypes.DEFAULT_TYPE):
-    """2 din (48 hours) por -1004422557441 channel-er post delete korbe ebong group-e notify korbe"""
     if not data.get("channel_clean_enabled", True):
         return
 
@@ -241,14 +239,12 @@ async def channel_post_cleaner_job(context: ContextTypes.DEFAULT_TYPE):
         return
 
     now = time.time()
-    two_days_seconds = 2 * 24 * 3600  # 48 ghonta (2 din)
+    two_days_seconds = 2 * 24 * 3600
 
-    # Jei postgulo 2 din purono hoyeche segulo alada kora
     expired_posts = [p for p in posts if now - p.get("timestamp", now) >= two_days_seconds]
     if not expired_posts:
         return
 
-    # Tarikh onujayi group kora
     dates_deleted = {}
     remaining_posts = []
 
@@ -267,7 +263,6 @@ async def channel_post_cleaner_job(context: ContextTypes.DEFAULT_TYPE):
     data["clean_channel_posts"] = remaining_posts
     save_data(data)
 
-    # Group -1004427297260 e notification message pathano
     for date_str, count in dates_deleted.items():
         try:
             msg_text = (
@@ -280,7 +275,7 @@ async def channel_post_cleaner_job(context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="HTML"
             )
         except Exception as e:
-            logger.error(f"Failed to notify group {NOTIFY_GROUP_ID} about cleaned posts: {e}")
+            logger.error(f"Failed to notify group {NOTIFY_GROUP_ID}: {e}")
 
 # ---------- Warning / Ban ----------
 async def issue_warning(update: Update, context: ContextTypes.DEFAULT_TYPE, target, reason: str):
@@ -445,7 +440,7 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await issue_warning(update, context, user, reason)
     raise ApplicationHandlerStop
 
-# ---------- Multi-Channel Post System (Permanent 2 Channels) ----------
+# ---------- Multi-Channel Post System (3 Channels With Clickable Links) ----------
 def _post_draft(context: ContextTypes.DEFAULT_TYPE, user_id: int):
     drafts = context.bot_data.setdefault("post_draft", {})
     return drafts.get(user_id)
@@ -461,7 +456,7 @@ def post_editor_markup(draft):
     rows.append([InlineKeyboardButton("✏️ এক্সট্রা টেক্সট যোগ/বদল", callback_data="post_set_caption")])
     if len(draft["buttons"]) < 5:
         rows.append([InlineKeyboardButton("➕ আরও বাটন যোগ করুন", callback_data="post_add_btn")])
-    rows.append([InlineKeyboardButton("✅ ২টি চ্যানেলে পোস্ট করুন", callback_data="post_publish")])
+    rows.append([InlineKeyboardButton("✅ ৩টি চ্যানেলে পোস্ট করুন", callback_data="post_publish")])
     rows.append([InlineKeyboardButton("❌ বাতিল করুন", callback_data="post_cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -470,9 +465,10 @@ def post_preview_text(draft):
     extra_txt = f"\n📝 <b>অতিরিক্ত টেক্সট:</b> {extra}" if extra else ""
 
     lines = [
-        "📋 <b>পোস্ট প্রিভিউ (২টি চ্যানেলে পোস্ট হবে):</b>",
-        f"🎯 <b>চ্যানেল ১ (-1004427297260):</b>\n<code>{PERMANENT_CHANNELS[-1004427297260]}</code>\n",
-        f"🎯 <b>চ্যানেল ২ ({CLEAN_CHANNEL_ID} - ২ দিন পর ক্লিন হবে):</b>\n<code>{PERMANENT_CHANNELS[CLEAN_CHANNEL_ID]}</code>",
+        "📋 <b>পোস্ট প্রিভিউ (৩টি চ্যানেলে আলাদা ক্লিকযোগ্য ক্যাপশন যাবে):</b>\n",
+        f"🎯 <b>চ্যানেল ১ (-1004427297260):</b>\n{PERMANENT_CHANNELS[-1004427297260]}\n",
+        f"🎯 <b>চ্যানেল ২ ({CLEAN_CHANNEL_ID} - ২ দিন পর ক্লিন হবে):</b>\n{PERMANENT_CHANNELS[CLEAN_CHANNEL_ID]}\n",
+        f"🎯 <b>চ্যানেল ৩ (-1003529904183):</b>\n{PERMANENT_CHANNELS[-1003529904183]}",
         extra_txt,
         "\n🔘 <b>যুক্ত করা বাটন:</b>"
     ]
@@ -491,8 +487,8 @@ async def start_post_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data.setdefault("post_draft", {})[user_id] = None
     context.user_data["awaiting"] = "post_video"
     await update.effective_message.reply_text(
-        "ভিডিও অথবা ছবি পাঠান যেটা ২টি চ্যানেলে পোস্ট করতে চান।\n"
-        "উভয় চ্যানেলে নিজস্ব ক্যাপশন অটো চলে যাবে।\n"
+        "ভিডিও অথবা ছবি পাঠান যেটা ৩টি চ্যানেলে পোস্ট করতে চান।\n"
+        "প্রতিটি চ্যানেলে নিজস্ব ক্লিকযোগ্য লিঙ্ক সহ ক্যাপশন চলে যাবে।\n"
         "বাতিল করতে /cancel লিখুন।"
     )
 
@@ -564,7 +560,7 @@ async def get_channels_status_markup(context: ContextTypes.DEFAULT_TYPE):
         extra_note = " (২ দিন পর অটো-ক্লিন)" if ch_id == CLEAN_CHANNEL_ID else ""
         lines.append(
             f"📍 <code>{ch_id}</code>{extra_note} ➔ <b>{admin_status}</b>\n"
-            f"📝 <i>ক্যাপশন:</i> <code>{default_cap}</code>\n"
+            f"📝 <i>ক্যাপশন:</i>\n{default_cap}\n"
         )
 
     return "\n".join(lines), InlineKeyboardMarkup(kb)
@@ -651,7 +647,6 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             success_count, fail_count = 0, 0
             extra_caption = draft.get("caption", "").strip()
 
-            # Bangladesh / Local timezone tarikh
             bd_tz = timezone(timedelta(hours=6))
             today_date_str = datetime.now(bd_tz).strftime("%d-%m-%Y")
 
@@ -670,7 +665,6 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         )
                     success_count += 1
 
-                    # CLEAN_CHANNEL_ID er post record kora 2 din por delete korar jonno
                     if ch_id == CLEAN_CHANNEL_ID and sent_msg:
                         clean_posts = data.setdefault("clean_channel_posts", [])
                         clean_posts.append({
@@ -751,7 +745,6 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not awaiting or not is_admin(user_id):
         return
 
-    # Post Extra Text Set
     if awaiting == "post_caption":
         draft = _post_draft(context, user_id)
         if not draft:
@@ -769,7 +762,6 @@ async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data["awaiting"] = None
         raise ApplicationHandlerStop
 
-    # Post Extra Button Set
     elif awaiting == "post_button":
         draft = _post_draft(context, user_id)
         if not draft:
@@ -821,7 +813,6 @@ async def whitelist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("বট চালু আছে ✅ গ্রুপে যোগ করুন এবং এডমিন করুন।")
 
-# ---------- Tiny HTTP server (Keep-alive) ----------
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -847,7 +838,6 @@ def main():
     start_health_server()
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Commands
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("ad", ad_cmd))
     app.add_handler(CommandHandler("warn", warn_cmd))
@@ -857,34 +847,24 @@ def main():
     app.add_handler(CommandHandler("post", post_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
 
-    # Auto Approve Member Join Requests (Channel & Group)
     app.add_handler(ChatJoinRequestHandler(auto_approve_request))
-
-    # Real-time Chat Member Status Updates (Duplicate-safe Welcome/Goodbye)
     app.add_handler(ChatMemberHandler(chat_member_update, ChatMemberHandler.CHAT_MEMBER))
 
-    # Admin Callback Queries
     app.add_handler(CallbackQueryHandler(admin_callback))
 
-    # Admin private video/photo capture
     app.add_handler(MessageHandler(
         (filters.VIDEO | filters.PHOTO) & filters.ChatType.PRIVATE, post_video_capture
     ))
 
-    # Private text inputs
     app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, admin_text_capture))
 
-    # Anti-link / promo / inbox automod in groups
     app.add_handler(MessageHandler(
         filters.ChatType.GROUPS & (filters.TEXT | filters.CAPTION) & ~filters.COMMAND,
         anti_link_automod
     ))
 
-    # Jobs
     if app.job_queue:
-        # Periodic Friend Invite Reminder (Every 30 minutes in active groups)
         app.job_queue.run_repeating(periodic_invite_reminder, interval=1800, first=60)
-        # 2 Days Old Channel Posts Auto-Cleaner (Checks every 10 minutes)
         app.job_queue.run_repeating(channel_post_cleaner_job, interval=600, first=30)
 
     logger.info("Bot starting...")
