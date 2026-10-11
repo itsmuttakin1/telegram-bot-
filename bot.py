@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
-# 3 jon admin access pabe (8967715315 jog kora hoyeche)
+# 3 jon admin access pabe
 ADMIN_IDS = {5140546628, 7728010216, 8967715315}
 
 DATA_FILE = "data.json"
@@ -27,7 +27,8 @@ DATA_FILE = "data.json"
 PERMANENT_RULES = (
     "📜 Group Rules:\n"
     "❌ কোনো ধরনের Link দেওয়া যাবে না\n"
-    "❌ অন্য Group/Channel-এর Link নিষেধ\n"
+    "❌ অন্য Group/Channel-এর Link বা Promo নিষেধ\n"
+    "❌ @Username বা চ্যানেলের Mention করা সম্পূর্ণ নিষেধ (শুধু Admin পারবে)\n"
     "❌ Spam করা যাবে না\n"
     "❌ Promotion করা যাবে না\n"
     "❌ অপ্রয়োজনীয় Message দেওয়া যাবে না\n\n"
@@ -38,9 +39,8 @@ PERMANENT_RULES = (
 
 PERMANENT_WELCOME = (
     "✨ <b>স্বাগতম আমাদের গ্রুপে {name}</b> ✨\n\n"
-    "⚠️ <i>চ্যানেল থেকে বের হওয়ার আগে ভেবে বের হবেন!</i>\n"
-    "💎 কারণ <b>প্রিমিয়াম ভিডিও ফ্রিতে</b> দেয়া হয় এই চ্যানেলে।\n\n"
-    "👉 তাই যাদের ফ্রিতে দরকার নাই তারা বের হয়ে যান, এটা সম্পূর্ণ আপনার ইচ্ছা! 🚀"
+    "🎬 নতুন সব ভাইরাল ও প্রিমিয়াম ভিডিও সবার আগে পেতে নিচের <b>Official Video Group</b> এ যুক্ত থাকুন!\n\n"
+    "👇 নিচে ক্লিক করে এখনই জয়েন করুন:"
 )
 
 PERMANENT_GOODBYE = (
@@ -64,6 +64,14 @@ PERMANENT_CHANNELS = {
     CLEAN_CHANNEL_ID: "Full Video 👇\nhttps://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8",
     -1003529904183: "Full Video 👇\nhttps://auctionr.org/4/f7aef1875c5940fd01991dfe705874c7"
 }
+
+# Welcome message markup
+def get_welcome_markup():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎬 Official Video Group", url="https://t.me/+9f4oDOMukMhmNjU1")],
+        [InlineKeyboardButton("পাবলিক গ্রুপ", url="https://t.me/+f0vawMiFO75mNDM1")],
+        [InlineKeyboardButton("Invite Friend", url="https://t.me/+N4Qum_s5qFQ3NWI1")]
+    ])
 
 def get_group_action_markup():
     return InlineKeyboardMarkup([
@@ -182,7 +190,7 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 chat_id=chat.id,
                 text=text,
                 parse_mode="HTML",
-                reply_markup=get_group_action_markup()
+                reply_markup=get_welcome_markup()
             )
             asyncio.create_task(delete_message_after_delay(chat.id, sent_msg.message_id, context, 60))
         except Exception as e:
@@ -207,7 +215,32 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
         except Exception as e:
             logger.error(f"Goodbye message error in {chat.id}: {e}")
 
-# ---------- Periodic Invite Reminder (Only Groups) ----------
+# ---------- Periodic Invite & Official Channel Reminders ----------
+async def periodic_channel_reminder(context: ContextTypes.DEFAULT_TYPE):
+    """55 minute por por official channel-e join korar reminder dibe"""
+    groups = data.get("active_groups", [])
+    text = (
+        "🔥 <b>আমাদের Official Video চ্যানেলে জয়েন করুন!</b> 🔥\n\n"
+        "সব আনকাট, স্পেশাল ও ভাইরাল প্রিমিয়াম ভিডিও ফ্রিতে পেতে আমাদের অফিশিয়াল চ্যানেলে যুক্ত থাকুন।\n"
+        "নিচের বাটনে ক্লিক করে এখনই চ্যানেলে জয়েন করে নিন 👇"
+    )
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎬 Join Official Video Channel", url="https://t.me/+9f4oDOMukMhmNjU1")],
+        [InlineKeyboardButton("পাবলিক গ্রুপ", url="https://t.me/+f0vawMiFO75mNDM1")]
+    ])
+
+    for chat_id in list(groups):
+        try:
+            sent_msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode="HTML",
+                reply_markup=markup
+            )
+            asyncio.create_task(delete_message_after_delay(chat_id, sent_msg.message_id, context, 300))
+        except Exception as e:
+            logger.debug(f"Failed to send channel reminder in {chat_id}: {e}")
+
 async def periodic_invite_reminder(context: ContextTypes.DEFAULT_TYPE):
     groups = data.get("active_groups", [])
     text = (
@@ -351,7 +384,7 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"সমস্যা: {e}")
 
-# ---------- Anti-link / Anti-promo / Inbox Filter Auto-mod ----------
+# ---------- Anti-link / Anti-mention / Inbox Filter Auto-mod ----------
 LINK_PATTERN = re.compile(
     r"(https?://\S+|www\.\S+|t\.me/\S+|telegram\.me/\S+|\S+\.(com|net|org|io|xyz|info|co|gg|me|app)\b)",
     re.IGNORECASE
@@ -368,6 +401,9 @@ INBOX_KEYWORDS_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+# @Username mention pattern
+MENTION_PATTERN = re.compile(r"@[a-zA-Z0-9_]{4,}", re.IGNORECASE)
+
 def _is_whitelisted(text: str) -> bool:
     wl = data.get("whitelist_links", [])
     return any(domain.lower() in text.lower() for domain in wl)
@@ -378,7 +414,17 @@ def message_has_link(msg) -> bool:
         return True
     entities = (msg.entities or []) + (msg.caption_entities or [])
     for ent in entities:
-        if ent.type in (MessageEntityType.URL, MessageEntityType.TEXT_LINK, MessageEntityType.MENTION):
+        if ent.type in (MessageEntityType.URL, MessageEntityType.TEXT_LINK):
+            return True
+    return False
+
+def message_has_mention(msg) -> bool:
+    text = msg.text or msg.caption or ""
+    if MENTION_PATTERN.search(text):
+        return True
+    entities = (msg.entities or []) + (msg.caption_entities or [])
+    for ent in entities:
+        if ent.type in (MessageEntityType.MENTION, MessageEntityType.TEXT_MENTION):
             return True
     return False
 
@@ -418,14 +464,17 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     is_forward = bool(msg.forward_origin or getattr(msg, "forward_from_chat", None) or getattr(msg, "forward_from", None))
     has_link = message_has_link(msg)
+    has_mention = message_has_mention(msg)
     is_promo = message_is_promo(msg)
 
-    if not (is_forward or has_link or is_promo):
+    if not (is_forward or has_link or has_mention or is_promo):
         return
 
     reason_parts = []
     if has_link:
         reason_parts.append("লিংক")
+    if has_mention:
+        reason_parts.append("@Username/মেনশন প্রমোশন")
     if is_forward:
         reason_parts.append("ফরোয়ার্ড মেসেজ")
     if is_promo:
@@ -440,7 +489,7 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await issue_warning(update, context, user, reason)
     raise ApplicationHandlerStop
 
-# ---------- Multi-Channel Post System (3 Channels With Clickable Links) ----------
+# ---------- Multi-Channel Post System ----------
 def _post_draft(context: ContextTypes.DEFAULT_TYPE, user_id: int):
     drafts = context.bot_data.setdefault("post_draft", {})
     return drafts.get(user_id)
@@ -536,7 +585,7 @@ def admin_panel_markup():
     kb = [
         [InlineKeyboardButton("🚫 ব্যান লিস্ট দেখুন", callback_data="view_banned")],
         [InlineKeyboardButton("⚠️ ওয়ার্নিং লিস্ট দেখুন", callback_data="view_warnings")],
-        [InlineKeyboardButton(f"🔗 অটো-ওয়ার্ন (লিংক): {antilink}", callback_data="toggle_antilink")],
+        [InlineKeyboardButton(f"🔗 অটো-ওয়ার্ন (লিংক/মেনশন): {antilink}", callback_data="toggle_antilink")],
         [InlineKeyboardButton(f"⚡ অটো জয়েন এপ্রুভ: {auto_appr}", callback_data="toggle_auto_approve")],
         [InlineKeyboardButton(f"🧹 চ্যানেল ক্লিন সার্ভিস: {clean_svc}", callback_data="toggle_clean_service")],
         [InlineKeyboardButton("🎯 স্থায়ী চ্যানেল ও ক্যাপশন দেখুন", callback_data="view_channels_status")],
@@ -838,6 +887,7 @@ def main():
     start_health_server()
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # Commands
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("ad", ad_cmd))
     app.add_handler(CommandHandler("warn", warn_cmd))
@@ -847,24 +897,36 @@ def main():
     app.add_handler(CommandHandler("post", post_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
 
+    # Auto Approve Member Join Requests (Channel & Group)
     app.add_handler(ChatJoinRequestHandler(auto_approve_request))
+
+    # Real-time Chat Member Status Updates
     app.add_handler(ChatMemberHandler(chat_member_update, ChatMemberHandler.CHAT_MEMBER))
 
+    # Admin Callback Queries
     app.add_handler(CallbackQueryHandler(admin_callback))
 
+    # Admin private video/photo capture
     app.add_handler(MessageHandler(
         (filters.VIDEO | filters.PHOTO) & filters.ChatType.PRIVATE, post_video_capture
     ))
 
+    # Private text inputs
     app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, admin_text_capture))
 
+    # Anti-link / promo / inbox / mention automod in groups
     app.add_handler(MessageHandler(
         filters.ChatType.GROUPS & (filters.TEXT | filters.CAPTION) & ~filters.COMMAND,
         anti_link_automod
     ))
 
+    # Background Jobs
     if app.job_queue:
+        # Periodic Friend Invite Reminder (Every 30 minutes)
         app.job_queue.run_repeating(periodic_invite_reminder, interval=1800, first=60)
+        # Official Channel Reminder (Every 55 minutes)
+        app.job_queue.run_repeating(periodic_channel_reminder, interval=3300, first=120)
+        # 2 Days Old Channel Posts Auto-Cleaner (Checks every 10 minutes)
         app.job_queue.run_repeating(channel_post_cleaner_job, interval=600, first=30)
 
     logger.info("Bot starting...")
