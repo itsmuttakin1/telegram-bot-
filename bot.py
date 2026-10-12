@@ -49,6 +49,19 @@ PERMANENT_GOODBYE = (
     "🔥 তাই তাকে এই গ্রুপ থেকে বের করে <b>প্রিমিয়াম গ্রুপে যুক্ত করা হয়েছে!</b> 👑"
 )
 
+# Professional formatted Member Message
+MEMBER_NOTICE_CAPTION = (
+    "📢 <b>সম্মানিত মেম্বারদের দৃষ্টি আকর্ষণ করছি!</b> 📢\n\n"
+    "👋 আপনারা অনেকেই হয়তো নতুন যুক্ত হয়েছেন এবং আমাদের চ্যানেলের নিয়ম সম্পর্কে জানেন না:\n\n"
+    "⏳ <b>পোস্ট স্থায়িত্ব:</b>\n"
+    "আমাদের চ্যানেলে প্রতিটি ভিডিও সর্বোচ্চ <b>২ দিন (৪৮ ঘণ্টা)</b> পর্যন্ত রাখা হয়। এরপর পুরাতন ভিডিও অটোমেটিক ডিলিট করে নতুন এক্সক্লুসিভ ভিডিও যোগ করা হয়।\n\n"
+    "⏰ <b>ভিডিও আপলোডের সময়সূচী:</b>\n"
+    "প্রতিদিন <b>রাত ৮:০০ টা থেকে ৯:০০ টা</b> এবং <b>রাত ১২:০০ টায়</b> চ্যানেলে নতুন ভিডিও আপলোড করা হয়।\n\n"
+    "⚠️ <b>সতর্কবার্তা:</b>\n"
+    "চ্যানেল থেকে লিভ নেওয়ার আগে একবার ভেবে দেখবেন—এখানে কিন্তু সব <b>প্রিমিয়াম ও পেইড ভিডিও সম্পূর্ণ ফ্রিতে</b> দেওয়া হয়! 🔥\n\n"
+    "❤️ একটিভ থাকুন এবং বন্ধুদের ইনভাইট করুন। ধন্যবাদ সবাইকে! ✨"
+)
+
 # Shob post-e default bhabe ei button thakbe
 DEFAULT_PERMANENT_BUTTON = {
     "text": "পাবলিক গ্রুপ",
@@ -65,7 +78,6 @@ PERMANENT_CHANNELS = {
     -1003529904183: "Full Video 👇\nhttps://auctionr.org/4/f7aef1875c5940fd01991dfe705874c7"
 }
 
-# Welcome message markup
 def get_welcome_markup():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎬 Official Video Group", url="https://t.me/+9f4oDOMukMhmNjU1")],
@@ -217,7 +229,6 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # ---------- Periodic Invite & Official Channel Reminders ----------
 async def periodic_channel_reminder(context: ContextTypes.DEFAULT_TYPE):
-    """55 minute por por official channel-e join korar reminder dibe"""
     groups = data.get("active_groups", [])
     text = (
         "🔥 <b>আমাদের Official Video চ্যানেলে জয়েন করুন!</b> 🔥\n\n"
@@ -401,7 +412,6 @@ INBOX_KEYWORDS_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-# @Username mention pattern
 MENTION_PATTERN = re.compile(r"@[a-zA-Z0-9_]{4,}", re.IGNORECASE)
 
 def _is_whitelisted(text: str) -> bool:
@@ -588,6 +598,8 @@ def admin_panel_markup():
         [InlineKeyboardButton(f"🔗 অটো-ওয়ার্ন (লিংক/মেনশন): {antilink}", callback_data="toggle_antilink")],
         [InlineKeyboardButton(f"⚡ অটো জয়েন এপ্রুভ: {auto_appr}", callback_data="toggle_auto_approve")],
         [InlineKeyboardButton(f"🧹 চ্যানেল ক্লিন সার্ভিস: {clean_svc}", callback_data="toggle_clean_service")],
+        [InlineKeyboardButton("🖼 Message for Member (গ্রুপে পাঠান)", callback_data="send_member_notice")],
+        [InlineKeyboardButton("🎙 Voice Message (গ্রুপে পাঠান)", callback_data="send_voice_notice")],
         [InlineKeyboardButton("🎯 স্থায়ী চ্যানেল ও ক্যাপশন দেখুন", callback_data="view_channels_status")],
         [InlineKeyboardButton("📢 চ্যানেলে নতুন পোস্ট বানান", callback_data="new_post")],
     ]
@@ -788,6 +800,70 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer(f"🧹 ক্লিন সার্ভিস {status_txt} করা হয়েছে!", show_alert=True)
         await query.edit_message_text("🛠 অ্যাডমিন প্যানেল", reply_markup=admin_panel_markup())
 
+    # Send 1.jpg photo with styled notice to all active groups
+    elif action == "send_member_notice":
+        photo_path = "1.jpg"
+        if not os.path.exists(photo_path):
+            await query.answer("❌ 1.jpg ফাইলটি পাওয়া যায়নি! গিটহাবে আপলোড আছে কিনা চেক করুন।", show_alert=True)
+            return
+
+        groups = data.get("active_groups", [])
+        if not groups:
+            await query.answer("❌ কোনো এক্টিভ গ্রুপ পাওয়া যায়নি!", show_alert=True)
+            return
+
+        success, fail = 0, 0
+        markup = get_welcome_markup()
+
+        for gid in groups:
+            try:
+                with open(photo_path, "rb") as photo_file:
+                    await context.bot.send_photo(
+                        chat_id=gid,
+                        photo=photo_file,
+                        caption=MEMBER_NOTICE_CAPTION,
+                        parse_mode="HTML",
+                        reply_markup=markup
+                    )
+                success += 1
+            except Exception as e:
+                logger.error(f"Failed to send 1.jpg to group {gid}: {e}")
+                fail += 1
+
+        await query.answer(f"✅ পাঠানো সম্পন্ন!\nসফল: {success} টি, ব্যর্থ: {fail} টি", show_alert=True)
+
+    # Send telegram.ogg voice note to all active groups
+    elif action == "send_voice_notice":
+        voice_path = "telegram.ogg"
+        if not os.path.exists(voice_path):
+            await query.answer("❌ telegram.ogg ফাইলটি পাওয়া যায়নি! গিটহাবে আপলোড আছে কিনা চেক করুন।", show_alert=True)
+            return
+
+        groups = data.get("active_groups", [])
+        if not groups:
+            await query.answer("❌ কোনো এক্টিভ গ্রুপ পাওয়া যায়নি!", show_alert=True)
+            return
+
+        success, fail = 0, 0
+        markup = get_welcome_markup()
+
+        for gid in groups:
+            try:
+                with open(voice_path, "rb") as voice_file:
+                    await context.bot.send_voice(
+                        chat_id=gid,
+                        voice=voice_file,
+                        caption="🎙 <b>গ্রুপের সকল মেম্বার অবশ্যই ভয়েসটি শুনুন!</b> 👇",
+                        parse_mode="HTML",
+                        reply_markup=markup
+                    )
+                success += 1
+            except Exception as e:
+                logger.error(f"Failed to send voice to group {gid}: {e}")
+                fail += 1
+
+        await query.answer(f"✅ ভয়েস মেসেজ পাঠানো সম্পন্ন!\nসফল: {success} টি, ব্যর্থ: {fail} টি", show_alert=True)
+
 async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
     awaiting = context.user_data.get("awaiting")
     user_id = update.effective_user.id
@@ -887,7 +963,6 @@ def main():
     start_health_server()
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Commands
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("ad", ad_cmd))
     app.add_handler(CommandHandler("warn", warn_cmd))
@@ -897,36 +972,25 @@ def main():
     app.add_handler(CommandHandler("post", post_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
 
-    # Auto Approve Member Join Requests (Channel & Group)
     app.add_handler(ChatJoinRequestHandler(auto_approve_request))
-
-    # Real-time Chat Member Status Updates
     app.add_handler(ChatMemberHandler(chat_member_update, ChatMemberHandler.CHAT_MEMBER))
 
-    # Admin Callback Queries
     app.add_handler(CallbackQueryHandler(admin_callback))
 
-    # Admin private video/photo capture
     app.add_handler(MessageHandler(
         (filters.VIDEO | filters.PHOTO) & filters.ChatType.PRIVATE, post_video_capture
     ))
 
-    # Private text inputs
     app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, admin_text_capture))
 
-    # Anti-link / promo / inbox / mention automod in groups
     app.add_handler(MessageHandler(
         filters.ChatType.GROUPS & (filters.TEXT | filters.CAPTION) & ~filters.COMMAND,
         anti_link_automod
     ))
 
-    # Background Jobs
     if app.job_queue:
-        # Periodic Friend Invite Reminder (Every 30 minutes)
         app.job_queue.run_repeating(periodic_invite_reminder, interval=1800, first=60)
-        # Official Channel Reminder (Every 55 minutes)
         app.job_queue.run_repeating(periodic_channel_reminder, interval=3300, first=120)
-        # 2 Days Old Channel Posts Auto-Cleaner (Checks every 10 minutes)
         app.job_queue.run_repeating(channel_post_cleaner_job, interval=600, first=30)
 
     logger.info("Bot starting...")
