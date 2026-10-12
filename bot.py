@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
-# 3 jon admin access pabe
+# ৩ জন এডমিন এক্সেস পাবে
 ADMIN_IDS = {5140546628, 7728010216, 8967715315}
 
 DATA_FILE = "data.json"
@@ -71,7 +71,7 @@ DEFAULT_PERMANENT_BUTTON = {
 CLEAN_CHANNEL_ID = -1004422557441
 NOTIFY_GROUP_ID = -1004427297260
 
-# 3-ti permanent channel ebong tader clickable styled emoji caption
+# ৩টি পার্মানেন্ট চ্যানেল
 PERMANENT_CHANNELS = {
     -1004427297260: "Full Video 👇\nhttps://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8",
     CLEAN_CHANNEL_ID: "Full Video 👇\nhttps://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8",
@@ -92,9 +92,9 @@ def get_group_action_markup():
     ])
 
 DEFAULT_DATA = {
-    "warnings": {},          # "chat_id:user_id" -> count
-    "banned": {},            # user_id(str) -> {"reason": str, "chat_id": int/str}
-    "active_groups": [],     # active group ids
+    "warnings": {},          
+    "banned": {},            
+    "active_groups": [],     
     "antilink_enabled": True,
     "auto_approve_enabled": True,
     "channel_clean_enabled": True,
@@ -227,7 +227,7 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
         except Exception as e:
             logger.error(f"Goodbye message error in {chat.id}: {e}")
 
-# ---------- Periodic Invite & Official Channel Reminders ----------
+# ---------- Periodic Reminders ----------
 async def periodic_channel_reminder(context: ContextTypes.DEFAULT_TYPE):
     groups = data.get("active_groups", [])
     text = (
@@ -598,8 +598,8 @@ def admin_panel_markup():
         [InlineKeyboardButton(f"🔗 অটো-ওয়ার্ন (লিংক/মেনশন): {antilink}", callback_data="toggle_antilink")],
         [InlineKeyboardButton(f"⚡ অটো জয়েন এপ্রুভ: {auto_appr}", callback_data="toggle_auto_approve")],
         [InlineKeyboardButton(f"🧹 চ্যানেল ক্লিন সার্ভিস: {clean_svc}", callback_data="toggle_clean_service")],
-        [InlineKeyboardButton("🖼 Message for Member (গ্রুপে পাঠান)", callback_data="send_member_notice")],
-        [InlineKeyboardButton("🎙 Voice Message (গ্রুপে পাঠান)", callback_data="send_voice_notice")],
+        [InlineKeyboardButton("🖼 Message for Member (গ্রুপ+চ্যানেল)", callback_data="send_member_notice")],
+        [InlineKeyboardButton("🎙 Voice Message (গ্রুপ+চ্যানেল)", callback_data="send_voice_notice")],
         [InlineKeyboardButton("🎯 স্থায়ী চ্যানেল ও ক্যাপশন দেখুন", callback_data="view_channels_status")],
         [InlineKeyboardButton("📢 চ্যানেলে নতুন পোস্ট বানান", callback_data="new_post")],
     ]
@@ -800,26 +800,26 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer(f"🧹 ক্লিন সার্ভিস {status_txt} করা হয়েছে!", show_alert=True)
         await query.edit_message_text("🛠 অ্যাডমিন প্যানেল", reply_markup=admin_panel_markup())
 
-    # Send 1.jpg photo with styled notice to all active groups
+    # Send 1.jpg to ALL active groups AND permanent channels
     elif action == "send_member_notice":
         photo_path = "1.jpg"
         if not os.path.exists(photo_path):
             await query.answer("❌ 1.jpg ফাইলটি পাওয়া যায়নি! গিটহাবে আপলোড আছে কিনা চেক করুন।", show_alert=True)
             return
 
-        groups = data.get("active_groups", [])
-        if not groups:
-            await query.answer("❌ কোনো এক্টিভ গ্রুপ পাওয়া যায়নি!", show_alert=True)
+        targets = list(set(data.get("active_groups", []) + list(PERMANENT_CHANNELS.keys())))
+        if not targets:
+            await query.answer("❌ কোনো এক্টিভ গ্রুপ বা চ্যানেল পাওয়া যায়নি!", show_alert=True)
             return
 
         success, fail = 0, 0
         markup = get_welcome_markup()
 
-        for gid in groups:
+        for cid in targets:
             try:
                 with open(photo_path, "rb") as photo_file:
                     await context.bot.send_photo(
-                        chat_id=gid,
+                        chat_id=cid,
                         photo=photo_file,
                         caption=MEMBER_NOTICE_CAPTION,
                         parse_mode="HTML",
@@ -827,42 +827,70 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 success += 1
             except Exception as e:
-                logger.error(f"Failed to send 1.jpg to group {gid}: {e}")
+                logger.error(f"Failed to send 1.jpg to {cid}: {e}")
                 fail += 1
 
-        await query.answer(f"✅ পাঠানো সম্পন্ন!\nসফল: {success} টি, ব্যর্থ: {fail} টি", show_alert=True)
+        await query.answer(f"✅ ফটো নোটিশ পাঠানো সম্পন্ন!\nসফল: {success} টি, ব্যর্থ: {fail} টি", show_alert=True)
 
-    # Send telegram.ogg voice note to all active groups
+    # Send telegram.ogg to ALL active groups AND permanent channels
     elif action == "send_voice_notice":
         voice_path = "telegram.ogg"
         if not os.path.exists(voice_path):
             await query.answer("❌ telegram.ogg ফাইলটি পাওয়া যায়নি! গিটহাবে আপলোড আছে কিনা চেক করুন।", show_alert=True)
             return
 
-        groups = data.get("active_groups", [])
-        if not groups:
-            await query.answer("❌ কোনো এক্টিভ গ্রুপ পাওয়া যায়নি!", show_alert=True)
+        targets = list(set(data.get("active_groups", []) + list(PERMANENT_CHANNELS.keys())))
+        if not targets:
+            await query.answer("❌ কোনো এক্টিভ গ্রুপ বা চ্যানেল পাওয়া যায়নি!", show_alert=True)
             return
 
         success, fail = 0, 0
         markup = get_welcome_markup()
 
-        for gid in groups:
+        # Read voice file once into memory to prevent file lock/stream issues
+        try:
+            with open(voice_path, "rb") as vf:
+                voice_data = vf.read()
+        except Exception as e:
+            await query.answer(f"❌ অডিও ফাইল পড়তে সমস্যা: {e}", show_alert=True)
+            return
+
+        for cid in targets:
+            sent = False
+            # 1. Try sending as Voice
             try:
-                with open(voice_path, "rb") as voice_file:
-                    await context.bot.send_voice(
-                        chat_id=gid,
-                        voice=voice_file,
-                        caption="🎙 <b>গ্রুপের সকল মেম্বার অবশ্যই ভয়েসটি শুনুন!</b> 👇",
+                await context.bot.send_voice(
+                    chat_id=cid,
+                    voice=voice_data,
+                    caption="🎙 <b>গ্রুপ ও চ্যানেলের সকল মেম্বার অবশ্যই ভয়েসটি শুনুন!</b> 👇",
+                    parse_mode="HTML",
+                    reply_markup=markup
+                )
+                sent = True
+            except Exception as e1:
+                logger.warning(f"send_voice failed for {cid}: {e1}, attempting send_audio...")
+
+            # 2. If voice fails (especially in channels/groups with voice restrictions), fallback to Audio
+            if not sent:
+                try:
+                    await context.bot.send_audio(
+                        chat_id=cid,
+                        audio=voice_data,
+                        title="Important Voice Notice",
+                        caption="🎙 <b>গ্রুপ ও চ্যানেলের সকল মেম্বার অবশ্যই অডিওটি শুনুন!</b> 👇",
                         parse_mode="HTML",
                         reply_markup=markup
                     )
+                    sent = True
+                except Exception as e2:
+                    logger.error(f"send_audio also failed for {cid}: {e2}")
+
+            if sent:
                 success += 1
-            except Exception as e:
-                logger.error(f"Failed to send voice to group {gid}: {e}")
+            else:
                 fail += 1
 
-        await query.answer(f"✅ ভয়েস মেসেজ পাঠানো সম্পন্ন!\nসফল: {success} টি, ব্যর্থ: {fail} টি", show_alert=True)
+        await query.answer(f"✅ ভয়েস/অডিও পাঠানো সম্পন্ন!\nসফল: {success} টি, ব্যর্থ: {fail} টি", show_alert=True)
 
 async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
     awaiting = context.user_data.get("awaiting")
