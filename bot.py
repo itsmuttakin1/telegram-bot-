@@ -390,7 +390,7 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"সমস্যা: {e}")
 
-# ---------- Anti-link / Anti-mention / Inbox Filter Auto-mod ----------
+# ---------- Anti-link / Anti-mention / Inbox / Taka & Bad Words Filter ----------
 LINK_PATTERN = re.compile(
     r"(https?://\S+|www\.\S+|t\.me/\S+|telegram\.me/\S+|\S+\.(com|net|org|io|xyz|info|co|gg|me|app)\b)",
     re.IGNORECASE
@@ -407,7 +407,16 @@ INBOX_KEYWORDS_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-MENTION_PATTERN = re.compile(r"@[a-zA-Z0-9_]{4,}", re.IGNORECASE)
+# @Username, @bot, etc. mention pattern
+MENTION_PATTERN = re.compile(r"@[a-zA-Z0-9_]{3,}", re.IGNORECASE)
+
+# Taka / Price / Slang keywords (Bangla + English)
+BAD_WORDS_PATTERN = re.compile(
+    r"(\b\d+\s*(tk|টাকা|taka|bdt)\b|"
+    r"\b(tk|taka|bdt|টাকা|টাকায়|টাকায়|দাম কত|কত টাকা|বিক্রি|সেল)\b|"
+    r"\b(dud|dudh|dudhe|দুধ|দুদ|ভোদা|ভুদা|খানকি|মাদারচোদ|চুদা|চুদি)\b)",
+    re.IGNORECASE
+)
 
 def _is_whitelisted(text: str) -> bool:
     wl = data.get("whitelist_links", [])
@@ -446,6 +455,7 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     register_group(update.effective_chat.id)
 
+    # Channel auto-forward message ignore
     if msg.is_automatic_forward or getattr(msg, "sender_chat", None) is not None:
         return
 
@@ -457,29 +467,36 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = msg.text or msg.caption or ""
 
-    if INBOX_KEYWORDS_PATTERN.search(text):
+    # 1. Inbox, Taka (500 tk), Dud, Slang keywords -> Direct Silent Delete
+    if INBOX_KEYWORDS_PATTERN.search(text) or BAD_WORDS_PATTERN.search(text):
         try:
             await msg.delete()
         except Exception as e:
-            logger.warning(f"Inbox delete failed: {e}")
+            logger.warning(f"Bad words / Inbox delete failed: {e}")
+        raise ApplicationHandlerStop
+
+    # 2. @Mention (e.g. @abc..bot..etc) by normal user -> Direct Silent Delete
+    if message_has_mention(msg):
+        try:
+            await msg.delete()
+        except Exception as e:
+            logger.warning(f"Mention delete failed: {e}")
         raise ApplicationHandlerStop
 
     if _is_whitelisted(text):
         return
 
+    # 3. Links / Forward / Promo check
     is_forward = bool(msg.forward_origin or getattr(msg, "forward_from_chat", None) or getattr(msg, "forward_from", None))
     has_link = message_has_link(msg)
-    has_mention = message_has_mention(msg)
     is_promo = message_is_promo(msg)
 
-    if not (is_forward or has_link or has_mention or is_promo):
+    if not (is_forward or has_link or is_promo):
         return
 
     reason_parts = []
     if has_link:
         reason_parts.append("লিংক")
-    if has_mention:
-        reason_parts.append("@Username/মেনশন প্রমোশন")
     if is_forward:
         reason_parts.append("ফরোয়ার্ড মেসেজ")
     if is_promo:
@@ -590,7 +607,7 @@ def admin_panel_markup():
     kb = [
         [InlineKeyboardButton("🚫 ব্যান লিস্ট দেখুন", callback_data="view_banned")],
         [InlineKeyboardButton("⚠️ ওয়ার্নিং লিস্ট দেখুন", callback_data="view_warnings")],
-        [InlineKeyboardButton(f"🔗 অটো-ওয়ার্ন (লিংক/মেনশন): {antilink}", callback_data="toggle_antilink")],
+        [InlineKeyboardButton(f"🔗 অটো-ওয়ার্ন (লিংক/স্প্যাম): {antilink}", callback_data="toggle_antilink")],
         [InlineKeyboardButton(f"⚡ অটো জয়েন এপ্রুভ: {auto_appr}", callback_data="toggle_auto_approve")],
         [InlineKeyboardButton(f"🧹 চ্যানেল ক্লিন সার্ভিস: {clean_svc}", callback_data="toggle_clean_service")],
         [InlineKeyboardButton("🖼 Message for Member (গ্রুপ+চ্যানেল)", callback_data="send_member_notice")],
@@ -802,7 +819,6 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("❌ 1.jpg ফাইলটি পাওয়া যায়নি!", show_alert=True)
             return
 
-        # Unique chat target list
         targets = []
         for g in data.get("active_groups", []):
             if g not in targets:
@@ -837,7 +853,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.answer(f"✅ ফটো নোটিশ পাঠানো সম্পন্ন!\nসফল: {success} টি, ব্যর্থ: {fail} টি", show_alert=True)
 
-    # Send telegram.ogg ONCE per target (Duplicate fix)
+    # Send telegram.ogg ONCE per target
     elif action == "send_voice_notice":
         voice_path = "telegram.ogg"
         if not os.path.exists(voice_path):
@@ -868,7 +884,6 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for cid in targets:
             try:
-                # Direct single voice message
                 await context.bot.send_voice(
                     chat_id=cid,
                     voice=voice_data,
@@ -878,7 +893,6 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 success += 1
             except Exception as e:
-                # If voice fails (e.g. strict channel setting), send audio once as fallback
                 logger.warning(f"send_voice failed for {cid}: {e}, trying send_audio once...")
                 try:
                     await context.bot.send_audio(
@@ -1015,6 +1029,7 @@ def main():
 
     app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, admin_text_capture))
 
+    # Bad words, Taka, Inbox, Mentions, Anti-link automod in groups
     app.add_handler(MessageHandler(
         filters.ChatType.GROUPS & (filters.TEXT | filters.CAPTION) & ~filters.COMMAND,
         anti_link_automod
