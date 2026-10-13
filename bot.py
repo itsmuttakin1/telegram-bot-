@@ -49,7 +49,6 @@ PERMANENT_GOODBYE = (
     "🔥 তাই তাকে এই গ্রুপ থেকে বের করে <b>প্রিমিয়াম গ্রুপে যুক্ত করা হয়েছে!</b> 👑"
 )
 
-# Professional formatted Member Message
 MEMBER_NOTICE_CAPTION = (
     "📢 <b>সম্মানিত মেম্বারদের দৃষ্টি আকর্ষণ করছি!</b> 📢\n\n"
     "👋 আপনারা অনেকেই হয়তো নতুন যুক্ত হয়েছেন এবং আমাদের চ্যানেলের নিয়ম সম্পর্কে জানেন না:\n\n"
@@ -62,7 +61,6 @@ MEMBER_NOTICE_CAPTION = (
     "❤️ একটিভ থাকুন এবং বন্ধুদের ইনভাইট করুন। ধন্যবাদ সবাইকে! ✨"
 )
 
-# Shob post-e default bhabe ei button thakbe
 DEFAULT_PERMANENT_BUTTON = {
     "text": "পাবলিক গ্রুপ",
     "url": "https://t.me/+f0vawMiFO75mNDM1"
@@ -71,7 +69,6 @@ DEFAULT_PERMANENT_BUTTON = {
 CLEAN_CHANNEL_ID = -1004422557441
 NOTIFY_GROUP_ID = -1004427297260
 
-# ৩টি পার্মানেন্ট চ্যানেল
 PERMANENT_CHANNELS = {
     -1004427297260: "Full Video 👇\nhttps://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8",
     CLEAN_CHANNEL_ID: "Full Video 👇\nhttps://breedsmuteexams.com/ja1gp1y0?key=5ad4cd88923c063b5b21a813a4822ed8",
@@ -162,7 +159,7 @@ async def auto_approve_request(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.error(f"Failed to auto-approve: {e}")
 
-# ---------- Welcome / Goodbye (Duplicate Protected + Auto-Delete) ----------
+# ---------- Welcome / Goodbye ----------
 async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if not chat or chat.type not in ("group", "supergroup"):
@@ -182,7 +179,6 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
     new_status = result.new_chat_member.status
     now = time.time()
 
-    # User Joined
     if old_status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED) and new_status in (ChatMemberStatus.MEMBER, ChatMemberStatus.RESTRICTED):
         key = (chat.id, user.id, "welcome")
         if now - recent_greets.get(key, 0) < 10:
@@ -208,7 +204,6 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
         except Exception as e:
             logger.error(f"Welcome message error in {chat.id}: {e}")
 
-    # User Left
     elif old_status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.RESTRICTED) and new_status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED):
         key = (chat.id, user.id, "goodbye")
         if now - recent_greets.get(key, 0) < 10:
@@ -800,14 +795,22 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer(f"🧹 ক্লিন সার্ভিস {status_txt} করা হয়েছে!", show_alert=True)
         await query.edit_message_text("🛠 অ্যাডমিন প্যানেল", reply_markup=admin_panel_markup())
 
-    # Send 1.jpg to ALL active groups AND permanent channels
+    # Send 1.jpg to groups and permanent channels
     elif action == "send_member_notice":
         photo_path = "1.jpg"
         if not os.path.exists(photo_path):
-            await query.answer("❌ 1.jpg ফাইলটি পাওয়া যায়নি! গিটহাবে আপলোড আছে কিনা চেক করুন।", show_alert=True)
+            await query.answer("❌ 1.jpg ফাইলটি পাওয়া যায়নি!", show_alert=True)
             return
 
-        targets = list(set(data.get("active_groups", []) + list(PERMANENT_CHANNELS.keys())))
+        # Unique chat target list
+        targets = []
+        for g in data.get("active_groups", []):
+            if g not in targets:
+                targets.append(g)
+        for c in PERMANENT_CHANNELS.keys():
+            if c not in targets:
+                targets.append(c)
+
         if not targets:
             await query.answer("❌ কোনো এক্টিভ গ্রুপ বা চ্যানেল পাওয়া যায়নি!", show_alert=True)
             return
@@ -815,16 +818,18 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         success, fail = 0, 0
         markup = get_welcome_markup()
 
+        with open(photo_path, "rb") as pf:
+            photo_bytes = pf.read()
+
         for cid in targets:
             try:
-                with open(photo_path, "rb") as photo_file:
-                    await context.bot.send_photo(
-                        chat_id=cid,
-                        photo=photo_file,
-                        caption=MEMBER_NOTICE_CAPTION,
-                        parse_mode="HTML",
-                        reply_markup=markup
-                    )
+                await context.bot.send_photo(
+                    chat_id=cid,
+                    photo=photo_bytes,
+                    caption=MEMBER_NOTICE_CAPTION,
+                    parse_mode="HTML",
+                    reply_markup=markup
+                )
                 success += 1
             except Exception as e:
                 logger.error(f"Failed to send 1.jpg to {cid}: {e}")
@@ -832,14 +837,21 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.answer(f"✅ ফটো নোটিশ পাঠানো সম্পন্ন!\nসফল: {success} টি, ব্যর্থ: {fail} টি", show_alert=True)
 
-    # Send telegram.ogg to ALL active groups AND permanent channels
+    # Send telegram.ogg ONCE per target (Duplicate fix)
     elif action == "send_voice_notice":
         voice_path = "telegram.ogg"
         if not os.path.exists(voice_path):
-            await query.answer("❌ telegram.ogg ফাইলটি পাওয়া যায়নি! গিটহাবে আপলোড আছে কিনা চেক করুন।", show_alert=True)
+            await query.answer("❌ telegram.ogg ফাইলটি পাওয়া যায়নি!", show_alert=True)
             return
 
-        targets = list(set(data.get("active_groups", []) + list(PERMANENT_CHANNELS.keys())))
+        targets = []
+        for g in data.get("active_groups", []):
+            if g not in targets:
+                targets.append(g)
+        for c in PERMANENT_CHANNELS.keys():
+            if c not in targets:
+                targets.append(c)
+
         if not targets:
             await query.answer("❌ কোনো এক্টিভ গ্রুপ বা চ্যানেল পাওয়া যায়নি!", show_alert=True)
             return
@@ -847,7 +859,6 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         success, fail = 0, 0
         markup = get_welcome_markup()
 
-        # Read voice file once into memory to prevent file lock/stream issues
         try:
             with open(voice_path, "rb") as vf:
                 voice_data = vf.read()
@@ -856,9 +867,8 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         for cid in targets:
-            sent = False
-            # 1. Try sending as Voice
             try:
+                # Direct single voice message
                 await context.bot.send_voice(
                     chat_id=cid,
                     voice=voice_data,
@@ -866,31 +876,25 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="HTML",
                     reply_markup=markup
                 )
-                sent = True
-            except Exception as e1:
-                logger.warning(f"send_voice failed for {cid}: {e1}, attempting send_audio...")
-
-            # 2. If voice fails (especially in channels/groups with voice restrictions), fallback to Audio
-            if not sent:
+                success += 1
+            except Exception as e:
+                # If voice fails (e.g. strict channel setting), send audio once as fallback
+                logger.warning(f"send_voice failed for {cid}: {e}, trying send_audio once...")
                 try:
                     await context.bot.send_audio(
                         chat_id=cid,
                         audio=voice_data,
-                        title="Important Voice Notice",
-                        caption="🎙 <b>গ্রুপ ও চ্যানেলের সকল মেম্বার অবশ্যই অডিওটি শুনুন!</b> 👇",
+                        title="Voice Notice",
+                        caption="🎙 <b>গ্রুপ ও চ্যানেলের সকল মেম্বার অবশ্যই ভয়েসটি শুনুন!</b> 👇",
                         parse_mode="HTML",
                         reply_markup=markup
                     )
-                    sent = True
+                    success += 1
                 except Exception as e2:
-                    logger.error(f"send_audio also failed for {cid}: {e2}")
+                    logger.error(f"Failed to send voice/audio to {cid}: {e2}")
+                    fail += 1
 
-            if sent:
-                success += 1
-            else:
-                fail += 1
-
-        await query.answer(f"✅ ভয়েস/অডিও পাঠানো সম্পন্ন!\nসফল: {success} টি, ব্যর্থ: {fail} টি", show_alert=True)
+        await query.answer(f"✅ ভয়েস মেসেজ পাঠানো সম্পন্ন!\nসফল: {success} টি, ব্যর্থ: {fail} টি", show_alert=True)
 
 async def admin_text_capture(update: Update, context: ContextTypes.DEFAULT_TYPE):
     awaiting = context.user_data.get("awaiting")
