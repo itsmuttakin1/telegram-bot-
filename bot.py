@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
 # 3 jon admin access pabe
-ADMIN_IDS = {5140546628, 7728010216, 8967715315}
+ADMIN_IDS = {5140546628, 7728010216}
 
 DATA_FILE = "data.json"
 
