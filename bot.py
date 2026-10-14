@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 
-# ৩ জন এডমিন এক্সেস পাবে
+# 3 jon admin access pabe
 ADMIN_IDS = {5140546628, 7728010216, 8967715315}
 
 DATA_FILE = "data.json"
@@ -95,6 +95,7 @@ DEFAULT_DATA = {
     "antilink_enabled": True,
     "auto_approve_enabled": True,
     "channel_clean_enabled": True,
+    "post_to_clean_channel": True, # -1004422557441 channel-e post on/off
     "clean_channel_posts": [],     
     "whitelist_links": [],
     "saved_caption": "",     
@@ -468,7 +469,6 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     register_group(update.effective_chat.id)
 
-    # Channel auto-forward message ignore (linked discussion post)
     if msg.is_automatic_forward or getattr(msg, "sender_chat", None) is not None:
         return
 
@@ -480,7 +480,6 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = msg.text or msg.caption or ""
 
-    # 1. Inbox, Taka (500 tk), Dud, Slang keywords -> Direct Silent Delete
     if INBOX_KEYWORDS_PATTERN.search(text) or BAD_WORDS_PATTERN.search(text):
         try:
             await msg.delete()
@@ -488,7 +487,6 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"Bad words / Inbox delete failed: {e}")
         raise ApplicationHandlerStop
 
-    # 2. @Mention (e.g. @abc..bot..etc) by normal user -> Direct Silent Delete
     if message_has_mention(msg):
         try:
             await msg.delete()
@@ -499,7 +497,6 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if _is_whitelisted(text):
         return
 
-    # 3. Check for Forward, Link, Promo
     is_fwd = is_forwarded_message(msg)
     has_lnk = message_has_link(msg)
     is_prm = message_is_promo(msg)
@@ -540,7 +537,7 @@ def post_editor_markup(draft):
     rows.append([InlineKeyboardButton("✏️ এক্সট্রা টেক্সট যোগ/বদল", callback_data="post_set_caption")])
     if len(draft["buttons"]) < 5:
         rows.append([InlineKeyboardButton("➕ আরও বাটন যোগ করুন", callback_data="post_add_btn")])
-    rows.append([InlineKeyboardButton("✅ ৩টি চ্যানেলে পোস্ট করুন", callback_data="post_publish")])
+    rows.append([InlineKeyboardButton("✅ চ্যানেলে পোস্ট করুন", callback_data="post_publish")])
     rows.append([InlineKeyboardButton("❌ বাতিল করুন", callback_data="post_cancel")])
     return InlineKeyboardMarkup(rows)
 
@@ -548,10 +545,11 @@ def post_preview_text(draft):
     extra = draft.get("caption", "").strip()
     extra_txt = f"\n📝 <b>অতিরিক্ত টেক্সট:</b> {extra}" if extra else ""
 
+    ch2_status = "চালু ✅" if data.get("post_to_clean_channel", True) else "বন্ধ ❌"
     lines = [
-        "📋 <b>পোস্ট প্রিভিউ (৩টি চ্যানেলে আলাদা ক্লিকযোগ্য ক্যাপশন যাবে):</b>\n",
+        "📋 <b>পোস্ট প্রিভিউ:</b>\n",
         f"🎯 <b>চ্যানেল ১ (-1004427297260):</b>\n{PERMANENT_CHANNELS[-1004427297260]}\n",
-        f"🎯 <b>চ্যানেল ২ ({CLEAN_CHANNEL_ID} - ২ দিন পর ক্লিন হবে):</b>\n{PERMANENT_CHANNELS[CLEAN_CHANNEL_ID]}\n",
+        f"🎯 <b>চ্যানেল ২ ({CLEAN_CHANNEL_ID}):</b> [{ch2_status}]\n{PERMANENT_CHANNELS[CLEAN_CHANNEL_ID]}\n",
         f"🎯 <b>চ্যানেল ৩ (-1003529904183):</b>\n{PERMANENT_CHANNELS[-1003529904183]}",
         extra_txt,
         "\n🔘 <b>যুক্ত করা বাটন:</b>"
@@ -571,8 +569,8 @@ async def start_post_flow(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data.setdefault("post_draft", {})[user_id] = None
     context.user_data["awaiting"] = "post_video"
     await update.effective_message.reply_text(
-        "ভিডিও অথবা ছবি পাঠান যেটা ৩টি চ্যানেলে পোস্ট করতে চান।\n"
-        "প্রতিটি চ্যানেলে নিজস্ব ক্লিকযোগ্য লিঙ্ক সহ ক্যাপশন চলে যাবে।\n"
+        "ভিডিও অথবা ছবি পাঠান যেটা চ্যানেলে পোস্ট করতে চান।\n"
+        "প্রতিটি চ্যানেলে নিজস্ব লিঙ্ক সহ ক্যাপশন চলে যাবে।\n"
         "বাতিল করতে /cancel লিখুন।"
     )
 
@@ -616,6 +614,7 @@ def admin_panel_markup():
     auto_appr = "ON ✅" if data.get("auto_approve_enabled", True) else "OFF ❌"
     antilink = "ON ✅" if data.get("antilink_enabled", True) else "OFF ❌"
     clean_svc = "ON ✅" if data.get("channel_clean_enabled", True) else "OFF ❌"
+    ch2_post = "ON ✅" if data.get("post_to_clean_channel", True) else "OFF ❌"
 
     kb = [
         [InlineKeyboardButton("🚫 ব্যান লিস্ট দেখুন", callback_data="view_banned")],
@@ -623,6 +622,7 @@ def admin_panel_markup():
         [InlineKeyboardButton(f"🔗 অটো-ওয়ার্ন (লিংক/স্প্যাম): {antilink}", callback_data="toggle_antilink")],
         [InlineKeyboardButton(f"⚡ অটো জয়েন এপ্রুভ: {auto_appr}", callback_data="toggle_auto_approve")],
         [InlineKeyboardButton(f"🧹 চ্যানেল ক্লিন সার্ভিস: {clean_svc}", callback_data="toggle_clean_service")],
+        [InlineKeyboardButton(f"📢 চ্যানেল ২ পোস্ট ({CLEAN_CHANNEL_ID}): {ch2_post}", callback_data="toggle_ch2_post")],
         [InlineKeyboardButton("🖼 Message for Member (গ্রুপ+চ্যানেল)", callback_data="send_member_notice")],
         [InlineKeyboardButton("🎙 Voice Message (গ্রুপ+চ্যানেল)", callback_data="send_voice_notice")],
         [InlineKeyboardButton("🎯 স্থায়ী চ্যানেল ও ক্যাপশন দেখুন", callback_data="view_channels_status")],
@@ -643,7 +643,11 @@ async def get_channels_status_markup(context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             admin_status = "❌ Not Found / Admin নেই"
 
-        extra_note = " (২ দিন পর অটো-ক্লিন)" if ch_id == CLEAN_CHANNEL_ID else ""
+        extra_note = ""
+        if ch_id == CLEAN_CHANNEL_ID:
+            is_on = "পোস্ট চালু ✅" if data.get("post_to_clean_channel", True) else "পোস্ট বন্ধ ❌"
+            extra_note = f" (২ দিন পর ক্লিন | {is_on})"
+
         lines.append(
             f"📍 <code>{ch_id}</code>{extra_note} ➔ <b>{admin_status}</b>\n"
             f"📝 <i>ক্যাপশন:</i>\n{default_cap}\n"
@@ -736,7 +740,14 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bd_tz = timezone(timedelta(hours=6))
             today_date_str = datetime.now(bd_tz).strftime("%d-%m-%Y")
 
+            # Check if CLEAN_CHANNEL_ID is allowed to receive post
+            allow_clean_post = data.get("post_to_clean_channel", True)
+
             for ch_id, base_caption in PERMANENT_CHANNELS.items():
+                # Jodi post_to_clean_channel OFF thake tahole CLEAN_CHANNEL_ID skip korbe
+                if ch_id == CLEAN_CHANNEL_ID and not allow_clean_post:
+                    continue
+
                 final_caption = f"{extra_caption}\n\n{base_caption}" if extra_caption else base_caption
                 try:
                     if draft["kind"] == "video":
@@ -823,6 +834,12 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data(data)
         status_txt = "চালু" if data["channel_clean_enabled"] else "বন্ধ"
         await query.answer(f"🧹 ক্লিন সার্ভিস {status_txt} করা হয়েছে!", show_alert=True)
+        await query.edit_message_text("🛠 অ্যাডমিন প্যানেল", reply_markup=admin_panel_markup())
+    elif action == "toggle_ch2_post":
+        data["post_to_clean_channel"] = not data.get("post_to_clean_channel", True)
+        save_data(data)
+        status_txt = "চালু" if data["post_to_clean_channel"] else "বন্ধ"
+        await query.answer(f"📢 চ্যানেল ২ পোস্ট {status_txt} করা হয়েছে!", show_alert=True)
         await query.edit_message_text("🛠 অ্যাডমিন প্যানেল", reply_markup=admin_panel_markup())
 
     # Send 1.jpg to groups and permanent channels
@@ -1042,7 +1059,7 @@ def main():
 
     app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, admin_text_capture))
 
-    # All message types filter (Text, Caption, Forwarded messages) in groups
+    # Groups automod
     app.add_handler(MessageHandler(
         filters.ChatType.GROUPS & ~filters.COMMAND,
         anti_link_automod
