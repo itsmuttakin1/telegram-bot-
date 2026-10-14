@@ -319,7 +319,8 @@ async def channel_post_cleaner_job(context: ContextTypes.DEFAULT_TYPE):
 # ---------- Warning / Ban ----------
 async def issue_warning(update: Update, context: ContextTypes.DEFAULT_TYPE, target, reason: str):
     chat = update.effective_chat
-    warn_key = f"{chat.id}:{target.id}"
+    uid = str(target.id)
+    warn_key = f"{chat.id}:{uid}"
     data["warnings"][warn_key] = data["warnings"].get(warn_key, 0) + 1
     count = data["warnings"][warn_key]
     save_data(data)
@@ -327,7 +328,7 @@ async def issue_warning(update: Update, context: ContextTypes.DEFAULT_TYPE, targ
     if count >= 3:
         try:
             await context.bot.ban_chat_member(chat.id, target.id)
-            data["banned"][str(target.id)] = {"reason": reason, "chat_id": chat.id}
+            data["banned"][uid] = {"reason": reason, "chat_id": chat.id}
             data["warnings"][warn_key] = 0
             save_data(data)
             await chat.send_message(
@@ -342,7 +343,10 @@ async def issue_warning(update: Update, context: ContextTypes.DEFAULT_TYPE, targ
             f"কারণ: {reason}\n\n"
             f"{PERMANENT_RULES}"
         )
-        await chat.send_message(warn_text, parse_mode="HTML")
+        try:
+            await chat.send_message(warn_text, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Failed to send warn text: {e}")
 
 async def warn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_group_admin(update, context, update.effective_user.id) and not is_admin(update.effective_user.id):
@@ -392,7 +396,7 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- Anti-link / Anti-mention / Inbox / Taka & Bad Words Filter ----------
 LINK_PATTERN = re.compile(
-    r"(https?://\S+|www\.\S+|t\.me/\S+|telegram\.me/\S+|\S+\.(com|net|org|io|xyz|info|co|gg|me|app)\b)",
+    r"(https?://\S+|www\.\S+|t\.me/\S+|telegram\.me/\S+|\b[a-zA-Z0-9\-]+\.(com|net|org|io|xyz|info|co|gg|me|app|link|site|live|online|store|tech|top|pro|biz|tv)\b)",
     re.IGNORECASE
 )
 PROMO_KEYWORDS = [
@@ -407,10 +411,8 @@ INBOX_KEYWORDS_PATTERN = re.compile(
     re.IGNORECASE
 )
 
-# @Username, @bot, etc. mention pattern
 MENTION_PATTERN = re.compile(r"@[a-zA-Z0-9_]{3,}", re.IGNORECASE)
 
-# Taka / Price / Slang keywords (Bangla + English)
 BAD_WORDS_PATTERN = re.compile(
     r"(\b\d+\s*(tk|টাকা|taka|bdt)\b|"
     r"\b(tk|taka|bdt|টাকা|টাকায়|টাকায়|দাম কত|কত টাকা|বিক্রি|সেল)\b|"
@@ -446,6 +448,17 @@ def message_is_promo(msg) -> bool:
     text = (msg.text or msg.caption or "").lower()
     return any(kw in text for kw in PROMO_KEYWORDS)
 
+def is_forwarded_message(msg) -> bool:
+    if getattr(msg, "forward_origin", None) is not None:
+        return True
+    if getattr(msg, "forward_from", None) is not None:
+        return True
+    if getattr(msg, "forward_from_chat", None) is not None:
+        return True
+    if getattr(msg, "forward_sender_name", None) is not None:
+        return True
+    return False
+
 async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not data.get("antilink_enabled", True):
         return
@@ -455,7 +468,7 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     register_group(update.effective_chat.id)
 
-    # Channel auto-forward message ignore
+    # Channel auto-forward message ignore (linked discussion post)
     if msg.is_automatic_forward or getattr(msg, "sender_chat", None) is not None:
         return
 
@@ -486,27 +499,27 @@ async def anti_link_automod(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if _is_whitelisted(text):
         return
 
-    # 3. Links / Forward / Promo check
-    is_forward = bool(msg.forward_origin or getattr(msg, "forward_from_chat", None) or getattr(msg, "forward_from", None))
-    has_link = message_has_link(msg)
-    is_promo = message_is_promo(msg)
+    # 3. Check for Forward, Link, Promo
+    is_fwd = is_forwarded_message(msg)
+    has_lnk = message_has_link(msg)
+    is_prm = message_is_promo(msg)
 
-    if not (is_forward or has_link or is_promo):
+    if not (is_fwd or has_lnk or is_prm):
         return
 
     reason_parts = []
-    if has_link:
+    if has_lnk:
         reason_parts.append("লিংক")
-    if is_forward:
+    if is_fwd:
         reason_parts.append("ফরোয়ার্ড মেসেজ")
-    if is_promo:
+    if is_prm:
         reason_parts.append("প্রোমোশনাল কনটেন্ট")
     reason = " + ".join(reason_parts)
 
     try:
         await msg.delete()
     except Exception as e:
-        logger.warning(f"Delete failed: {e}")
+        logger.warning(f"Auto-mod delete failed: {e}")
 
     await issue_warning(update, context, user, reason)
     raise ApplicationHandlerStop
@@ -1029,9 +1042,9 @@ def main():
 
     app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & ~filters.COMMAND, admin_text_capture))
 
-    # Bad words, Taka, Inbox, Mentions, Anti-link automod in groups
+    # All message types filter (Text, Caption, Forwarded messages) in groups
     app.add_handler(MessageHandler(
-        filters.ChatType.GROUPS & (filters.TEXT | filters.CAPTION) & ~filters.COMMAND,
+        filters.ChatType.GROUPS & ~filters.COMMAND,
         anti_link_automod
     ))
 
